@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `agent-do psql` for PostgreSQL CLI operations via the native `psql`/`pg_dump`/`pg_restore` binaries. Connection management with macOS Keychain-backed profiles, schema exploration (snapshot, tables, views, describe, schemas, extensions, sizes, relations), data operations (query with auto-LIMIT, sample, count, exec), admin commands (connections, locks, stats, indexes, version), and backup/restore. All output is structured JSON. Complementary to `agent-db` (which uses Python drivers for multi-database support). Table name validation prevents SQL injection in identifier interpolation. Snapshot integration on connect, query, and exec for audit trail.
 - `agent-do gh` for GitHub repository, pull request, review, and merge work-state across accessible repos, with `inbox`, `awaiting`, `prs`, `pr`, `diff`, `threads`, `checks`, `review`, `audit`, `approve`, `request-changes`, `comment`, `merge`, `ready`, and `draft` commands.
 - `agent-do gh audit <pr>` and `agent-do gh awaiting --audit --replies --probe-deploys` for deterministic PR review-risk scanning and request-changes-ready engineering replies with concrete fix guidance.
 - Optional Sonnet 4.6 adaptive-thinking command selection for `agent-do suggest`, grounded in registry candidates with deterministic fallback and `--ai auto|on|off`.
