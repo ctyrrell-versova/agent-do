@@ -157,7 +157,7 @@ except:
 # Sets: _PG_HOST, _PG_PORT, _PG_DATABASE, _PG_USER, _PG_PASSWORD, _PG_SSLMODE
 parse_connection_string() {
     eval "$(python3 -c "
-import sys
+import sys, shlex
 from urllib.parse import urlparse, parse_qs
 try:
     u = urlparse(sys.argv[1])
@@ -168,12 +168,12 @@ try:
     pw = u.password or ''
     qs = parse_qs(u.query)
     ssl = qs.get('sslmode', ['prefer'])[0]
-    print(f'_PG_HOST={host}')
-    print(f'_PG_PORT={port}')
-    print(f'_PG_DATABASE={db}')
-    print(f'_PG_USER={user}')
-    print(f'_PG_PASSWORD={pw}')
-    print(f'_PG_SSLMODE={ssl}')
+    print(f'_PG_HOST={shlex.quote(host)}')
+    print(f'_PG_PORT={shlex.quote(port)}')
+    print(f'_PG_DATABASE={shlex.quote(db)}')
+    print(f'_PG_USER={shlex.quote(user)}')
+    print(f'_PG_PASSWORD={shlex.quote(pw)}')
+    print(f'_PG_SSLMODE={shlex.quote(ssl)}')
 except Exception as e:
     print(f'echo \"Error parsing connection string: {e}\" >&2; return 1', file=sys.stderr)
     sys.exit(1)
@@ -187,15 +187,15 @@ load_session() {
         return 1
     fi
     eval "$(python3 -c "
-import json, sys
+import json, sys, shlex
 try:
     with open(sys.argv[1]) as f:
         s = json.load(f)
-    print(f'_PG_HOST={s.get(\"host\", \"\")}')
-    print(f'_PG_PORT={s.get(\"port\", \"5432\")}')
-    print(f'_PG_DATABASE={s.get(\"database\", \"\")}')
-    print(f'_PG_USER={s.get(\"user\", \"\")}')
-    print(f'_PG_SSLMODE={s.get(\"sslmode\", \"prefer\")}')
+    print(f'_PG_HOST={shlex.quote(s.get(\"host\", \"\"))}')
+    print(f'_PG_PORT={shlex.quote(s.get(\"port\", \"5432\"))}')
+    print(f'_PG_DATABASE={shlex.quote(s.get(\"database\", \"\"))}')
+    print(f'_PG_USER={shlex.quote(s.get(\"user\", \"\"))}')
+    print(f'_PG_SSLMODE={shlex.quote(s.get(\"sslmode\", \"prefer\"))}')
 except:
     sys.exit(1)
 " "$SESSION_FILE" 2>/dev/null)" || return 1
@@ -244,14 +244,19 @@ _get_password() {
     fi
 }
 
-# Get session password (uses the database name as keychain key)
+# Build a composite session key to avoid collisions across hosts/users/databases
+_session_key() {
+    echo "session-${_PG_HOST:-localhost}-${_PG_PORT:-5432}-${_PG_USER:-$(whoami)}-${_PG_DATABASE:-default}"
+}
+
+# Get session password
 _get_session_password() {
-    _get_password "session-${_PG_DATABASE:-default}"
+    _get_password "$(_session_key)"
 }
 
 # Store session password
 _store_session_password() {
-    _store_password "session-${_PG_DATABASE:-default}" "$1"
+    _store_password "$(_session_key)" "$1"
 }
 
 # Ensure we have an active connection. Exits with error if not.
@@ -543,7 +548,7 @@ profiles = json.load(sys.stdin)
 name = sys.argv[1]
 if name not in profiles:
     print(json.dumps({'ok': False, 'error': f\"Profile '{name}' not found\"}))
-    sys.exit(0)
+    sys.exit(1)
 del profiles[name]
 with open(sys.argv[2], 'w') as f:
     json.dump(profiles, f, indent=2)
@@ -943,6 +948,12 @@ cmd_query() {
             limit="200"
         fi
     fi
+
+    # Validate limit is numeric
+    if [[ -n "$limit" ]] && [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+        echo '{"ok": false, "error": "Limit must be a positive integer"}'
+        return 1
+    fi
     if [[ -n "$limit" ]] && ! echo "$sql" | grep -qi 'LIMIT'; then
         sql="$sql LIMIT $limit"
     fi
@@ -1008,6 +1019,12 @@ cmd_sample() {
         return 1
     fi
     validate_table_name "$table" || return 1
+
+    # Validate n is numeric and within bounds
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || [[ "$n" -lt 1 ]] || [[ "$n" -gt 1000 ]]; then
+        echo '{"ok": false, "error": "Sample count must be a number between 1 and 1000"}'
+        return 1
+    fi
 
     # Shift off table and n, check for --random
     shift
@@ -1410,6 +1427,11 @@ cmd_restore() {
 
     # Detect format: .sql → psql, otherwise → pg_restore
     if [[ "$infile" == *.sql ]]; then
+        # Warn if restore-specific flags are set — they don't apply to plain SQL
+        if [[ "$clean" == "true" ]] || [[ "$schema_only" == "true" ]]; then
+            echo '{"ok": false, "error": "Flags --clean and --schema-only are not supported for .sql files (use pg_restore custom/directory format instead)"}'
+            return 1
+        fi
         cmd_exec "$infile"
         return $?
     fi

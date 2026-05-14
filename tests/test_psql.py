@@ -41,7 +41,7 @@ def run_bash(script: str, env_override: dict | None = None) -> subprocess.Comple
     if env_override:
         env.update(env_override)
     return subprocess.run(
-        ["bash", "-lc", script],
+        ["bash", "-c", script],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -192,8 +192,8 @@ validate_table_name "1starts_with_digit" 2>/dev/null && echo "ACCEPTED" || echo 
         r = run_bash(script)
         for case in ["injection", "quote", "empty", "space", "digit"]:
             require(f"REJECTED:{case}" in r.stdout, f"'{case}' should be rejected: {r.stdout}")
-            require("ACCEPTED" not in r.stdout.split(f"REJECTED:{case}")[0].split("REJECTED")[-1] if case != "injection" else True,
-                     f"'{case}' was accepted")
+        # Verify no invalid names were accepted
+        require("ACCEPTED" not in r.stdout, "some invalid names were accepted")
 
     check("validate_table_name rejects invalid names", test_validate_table_name_invalid)
 
@@ -216,9 +216,9 @@ mask_connection_string "postgresql://myuser:supersecret@db.render.com:5432/mydb"
     def test_connect_no_args():
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {"HOME": tmpdir}
-            # Unset all PG* vars
+            # Unset all PG* vars (pop, not empty string — empty is still "set")
             for k in ["PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPORT"]:
-                env[k] = ""
+                env.pop(k, None)
             r = run_tool("connect", env_override=env)
             data = json.loads(r.stdout)
             require(data["ok"] is False, f"connect with no args should fail: {data}")
