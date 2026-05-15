@@ -188,14 +188,33 @@ validate_table_name "table'name" 2>/dev/null && echo "ACCEPTED" || echo "REJECTE
 validate_table_name "" 2>/dev/null && echo "ACCEPTED" || echo "REJECTED:empty"
 validate_table_name "table name" 2>/dev/null && echo "ACCEPTED" || echo "REJECTED:space"
 validate_table_name "1starts_with_digit" 2>/dev/null && echo "ACCEPTED" || echo "REJECTED:digit"
+validate_table_name "a.b.c" 2>/dev/null && echo "ACCEPTED" || echo "REJECTED:multidot"
+validate_table_name "schema.1bad" 2>/dev/null && echo "ACCEPTED" || echo "REJECTED:schema_bad_table"
 '''
         r = run_bash(script)
-        for case in ["injection", "quote", "empty", "space", "digit"]:
+        for case in ["injection", "quote", "empty", "space", "digit", "multidot", "schema_bad_table"]:
             require(f"REJECTED:{case}" in r.stdout, f"'{case}' should be rejected: {r.stdout}")
         # Verify no invalid names were accepted
         require("ACCEPTED" not in r.stdout, "some invalid names were accepted")
 
     check("validate_table_name rejects invalid names", test_validate_table_name_invalid)
+
+    def test_parse_table_ref():
+        script = f'''
+eval "$(sed -n '/^parse_table_ref/,/^}}/p' "{TOOL}")"
+parse_table_ref "users"
+echo "SCHEMA:$_TBL_SCHEMA TABLE:$_TBL_NAME"
+parse_table_ref "myschema.mytable"
+echo "SCHEMA:$_TBL_SCHEMA TABLE:$_TBL_NAME"
+parse_table_ref "public.accounts"
+echo "SCHEMA:$_TBL_SCHEMA TABLE:$_TBL_NAME"
+'''
+        r = run_bash(script)
+        require("SCHEMA:public TABLE:users" in r.stdout, f"bare name should default to public schema: {r.stdout}")
+        require("SCHEMA:myschema TABLE:mytable" in r.stdout, f"schema.table should parse correctly: {r.stdout}")
+        require("SCHEMA:public TABLE:accounts" in r.stdout, f"public.accounts should parse correctly: {r.stdout}")
+
+    check("parse_table_ref splits schema and table", test_parse_table_ref)
 
     # ---- Connection String Masking ----
     def test_mask_connection_string():

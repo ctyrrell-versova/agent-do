@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PSQL_CONFIG_DIR="${HOME}/.agent-do/psql"
+PSQL_CONFIG_DIR="${AGENT_DO_HOME:-$HOME/.agent-do}/psql"
 SESSION_FILE="${PSQL_CONFIG_DIR}/session.json"
 PROFILES_FILE="${PSQL_CONFIG_DIR}/profiles.json"
 
@@ -120,20 +120,46 @@ ensure_config_dir() {
     mkdir -p "$PSQL_CONFIG_DIR"
 }
 
-# Validate a table name to prevent SQL injection.
-# Allows: letters, digits, underscores, dots (schema.table), hyphens.
-# Rejects everything else.
+# Validate a table reference to prevent SQL injection.
+# Allows: schema.table or just table. Each component must be a valid SQL identifier
+# (letters, digits, underscores; must start with letter or underscore).
+# At most one dot (schema.table); rejects everything else.
 validate_table_name() {
     local name="$1"
     if [[ -z "$name" ]]; then
         echo '{"ok": false, "error": "Table name required"}'
         return 1
     fi
-    if [[ ! "$name" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*$ ]]; then
-        echo "{\"ok\": false, \"error\": \"Invalid table name: $name\"}"
+    # Allow schema.table (one dot max); validate each component
+    local part
+    local dot_count="${name//[^.]/}"
+    if [[ ${#dot_count} -gt 1 ]]; then
+        echo "{\"ok\": false, \"error\": \"Invalid table reference (too many dots): $name\"}"
         return 1
     fi
+    IFS='.' read -ra parts <<< "$name"
+    for part in "${parts[@]}"; do
+        if [[ ! "$part" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            echo "{\"ok\": false, \"error\": \"Invalid identifier: $part\"}"
+            return 1
+        fi
+    done
     return 0
+}
+
+# Parse a table reference into schema and table components.
+# Sets _TBL_SCHEMA and _TBL_NAME. Call after validate_table_name.
+# "users" -> schema=public, table=users
+# "myschema.users" -> schema=myschema, table=users
+parse_table_ref() {
+    local ref="$1"
+    if [[ "$ref" == *.* ]]; then
+        _TBL_SCHEMA="${ref%%.*}"
+        _TBL_NAME="${ref#*.}"
+    else
+        _TBL_SCHEMA="public"
+        _TBL_NAME="$ref"
+    fi
 }
 
 # Mask password in a connection string for safe display
@@ -731,11 +757,13 @@ cmd_describe() {
         return 1
     fi
     validate_table_name "$table" || return 1
+    parse_table_ref "$table"
 
     local result
     result=$(run_psql_raw "
         SELECT json_build_object(
             'table', '$table',
+            'schema', '$_TBL_SCHEMA',
             'columns', (
                 SELECT json_agg(json_build_object(
                     'name', c.column_name,
@@ -747,18 +775,18 @@ cmd_describe() {
                     'default', c.column_default
                 ) ORDER BY c.ordinal_position)
                 FROM information_schema.columns c
-                WHERE c.table_name = '$table' AND c.table_schema = 'public'
+                WHERE c.table_name = '$_TBL_NAME' AND c.table_schema = '$_TBL_SCHEMA'
             ),
             'primary_key', COALESCE((
                 SELECT json_agg(a.attname ORDER BY a.attnum)
                 FROM pg_index i
                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-                WHERE i.indrelid = '$table'::regclass AND i.indisprimary
+                WHERE i.indrelid = '\"$_TBL_SCHEMA\".\"$_TBL_NAME\"'::regclass AND i.indisprimary
             ), '[]'::json),
             'foreign_keys', COALESCE((
                 SELECT json_agg(json_build_object(
                     'column', kcu.column_name,
-                    'references', ccu.table_name || '.' || ccu.column_name,
+                    'references', ccu.table_schema || '.' || ccu.table_name || '.' || ccu.column_name,
                     'constraint', tc.constraint_name
                 ))
                 FROM information_schema.table_constraints tc
@@ -766,7 +794,8 @@ cmd_describe() {
                     ON tc.constraint_name = kcu.constraint_name
                 JOIN information_schema.constraint_column_usage ccu
                     ON ccu.constraint_name = tc.constraint_name
-                WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = '$table'
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_name = '$_TBL_NAME' AND tc.table_schema = '$_TBL_SCHEMA'
             ), '[]'::json),
             'indexes', COALESCE((
                 SELECT json_agg(json_build_object(
@@ -774,11 +803,15 @@ cmd_describe() {
                     'definition', indexdef,
                     'size', pg_size_pretty(pg_relation_size(quote_ident(indexname)))
                 ))
-                FROM pg_indexes WHERE tablename = '$table'
+                FROM pg_indexes
+                WHERE tablename = '$_TBL_NAME' AND schemaname = '$_TBL_SCHEMA'
             ), '[]'::json),
-            'row_count', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = '$table'),
-            'size', pg_size_pretty(pg_total_relation_size(quote_ident('$table'))),
-            'size_bytes', pg_total_relation_size(quote_ident('$table'))
+            'row_count', (SELECT n_live_tup FROM pg_stat_user_tables
+                          WHERE relname = '$_TBL_NAME' AND schemaname = '$_TBL_SCHEMA'),
+            'size', pg_size_pretty(pg_total_relation_size(
+                quote_ident('$_TBL_SCHEMA') || '.' || quote_ident('$_TBL_NAME'))),
+            'size_bytes', pg_total_relation_size(
+                quote_ident('$_TBL_SCHEMA') || '.' || quote_ident('$_TBL_NAME'))
         )
     ") || {
         echo "{\"ok\": false, \"error\": \"Table '$table' not found or query failed\", \"exit_code\": 3}"
@@ -879,7 +912,8 @@ cmd_relations() {
     local where_clause=""
     if [[ -n "$table" ]]; then
         validate_table_name "$table" || return 1
-        where_clause="AND (tc.table_name = '$table' OR ccu.table_name = '$table')"
+        parse_table_ref "$table"
+        where_clause="AND ((tc.table_name = '$_TBL_NAME' AND tc.table_schema = '$_TBL_SCHEMA') OR (ccu.table_name = '$_TBL_NAME' AND ccu.table_schema = '$_TBL_SCHEMA'))"
     fi
 
     local result
@@ -1019,6 +1053,7 @@ cmd_sample() {
         return 1
     fi
     validate_table_name "$table" || return 1
+    parse_table_ref "$table"
 
     # Validate n is numeric and within bounds
     if [[ ! "$n" =~ ^[0-9]+$ ]] || [[ "$n" -lt 1 ]] || [[ "$n" -gt 1000 ]]; then
@@ -1041,12 +1076,14 @@ cmd_sample() {
         order_clause="ORDER BY RANDOM()"
     fi
 
+    local qualified="\"$_TBL_SCHEMA\".\"$_TBL_NAME\""
+
     # Get total count
     local total
-    total=$(run_psql_raw "SELECT COUNT(*) FROM $(printf '%s' "$table")" 2>/dev/null) || total="?"
+    total=$(run_psql_raw "SELECT COUNT(*) FROM $qualified" 2>/dev/null) || total="?"
 
     local result
-    result=$(run_psql_full "SELECT * FROM $(printf '%s' "$table") $order_clause LIMIT $n") || {
+    result=$(run_psql_full "SELECT * FROM $qualified $order_clause LIMIT $n") || {
         echo "{\"ok\": false, \"error\": \"Table '$table' not found\", \"exit_code\": 3}"
         exit 3
     }
@@ -1090,9 +1127,11 @@ cmd_count() {
         return 1
     fi
     validate_table_name "$table" || return 1
+    parse_table_ref "$table"
 
+    local qualified="\"$_TBL_SCHEMA\".\"$_TBL_NAME\""
     local result
-    result=$(run_psql_raw "SELECT COUNT(*) FROM $(printf '%s' "$table")") || {
+    result=$(run_psql_raw "SELECT COUNT(*) FROM $qualified") || {
         echo "{\"ok\": false, \"error\": \"Table '$table' not found\", \"exit_code\": 3}"
         exit 3
     }
@@ -1217,10 +1256,12 @@ cmd_stats() {
 
     if [[ -n "$table" ]]; then
         validate_table_name "$table" || return 1
+        parse_table_ref "$table"
         local result
         result=$(run_psql_raw "
             SELECT json_build_object(
                 'table', relname,
+                'schema', schemaname,
                 'seq_scan', seq_scan,
                 'seq_tup_read', seq_tup_read,
                 'idx_scan', COALESCE(idx_scan, 0),
@@ -1235,7 +1276,8 @@ cmd_stats() {
                 'last_analyze', last_analyze,
                 'last_autoanalyze', last_autoanalyze
             )
-            FROM pg_stat_user_tables WHERE relname = '$table'
+            FROM pg_stat_user_tables
+            WHERE relname = '$_TBL_NAME' AND schemaname = '$_TBL_SCHEMA'
         ") || { echo '{"ok": false, "error": "Table not found", "exit_code": 3}'; exit 3; }
 
         python3 -c "
@@ -1282,6 +1324,7 @@ cmd_indexes() {
         return 1
     fi
     validate_table_name "$table" || return 1
+    parse_table_ref "$table"
 
     local result
     result=$(run_psql_raw "
@@ -1295,7 +1338,7 @@ cmd_indexes() {
             'definition', pg_get_indexdef(i.indexrelid)
         ) ORDER BY i.idx_scan DESC), '[]')
         FROM pg_stat_user_indexes i
-        WHERE i.relname = '$table'
+        WHERE i.relname = '$_TBL_NAME' AND i.schemaname = '$_TBL_SCHEMA'
     ") || { echo '{"ok": false, "error": "Query failed"}'; exit 4; }
 
     python3 -c "
