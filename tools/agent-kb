@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# agent-kb - Query the Palantir knowledge base over the VID codebase.
+#
+# Palantir continuously indexes every repo in the Versova-Intelligence-Division
+# GitHub org: embedding source chunks (pass one), generating structured docs
+# with claim-by-claim verification (pass two), and snapshotting Render runtime
+# state. This tool queries that corpus via the Palantir API's /kb endpoint.
+#
+# The retrieval pipeline (embed query -> top-K search -> Haiku rerank -> Sonnet
+# synthesize) runs server-side. Answers include source citations with file
+# paths, line ranges, commit SHAs, and freshness markers.
+#
+# Requires:
+#   PALANTIR_KB_TOKEN   Bearer token for the /kb endpoint
+#   PALANTIR_URL        Base URL of the Palantir API (optional; defaults to
+#                       the production Render deployment)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/lib/snapshot.sh"    2>/dev/null || true
+# shellcheck source=/dev/null
+source "$REPO_ROOT/lib/json-output.sh" 2>/dev/null || true
+
+PALANTIR_DEFAULT_URL="https://palantir-api-9moj.onrender.com"
+
+# Help
+
+show_help() {
+    cat << 'EOF'
+agent-kb - Query the Palantir knowledge base
+
+ASK
+  ask "<question>" [--json]    Ask the knowledge base a question about VID repos.
+                               Returns a synthesized answer with source citations,
+                               freshness markers, and similarity scores.
+
+DIAGNOSTICS
+  health [--json]              Check Palantir API connectivity
+  snapshot [--json]            Auth status, API URL, connectivity
+
+CREDENTIALS
+  PALANTIR_KB_TOKEN            Bearer token for /kb endpoint (required)
+  PALANTIR_URL                 API base URL (optional; defaults to production)
+
+EXAMPLES
+  agent-do kb ask "how does versova-chat handle authentication?"
+  agent-do kb ask "what env vars does mr-president need?" --json
+  agent-do kb health
+  agent-do kb snapshot --json
+EOF
+}
+
+# Helpers
+
+_err() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+_resolve_url() {
+    local url="${PALANTIR_URL:-$PALANTIR_DEFAULT_URL}"
+    printf '%s\n' "${url%/}"
+}
+
+_resolve_token() {
+    local token="${PALANTIR_KB_TOKEN:-}"
+    if [[ -z "$token" ]]; then
+        _err "PALANTIR_KB_TOKEN not set. Store it with: agent-do creds store PALANTIR_KB_TOKEN --stdin"
+    fi
+    echo "$token"
+}
+
+_json_question_body() {
+    local question="$1"
+    if ! command -v python3 &>/dev/null; then
+        _err "python3 is required to encode the /kb request body"
+    fi
+    python3 -c 'import json, sys; print(json.dumps({"question": sys.argv[1]}))' "$question"
+}
+
+# HTTP request helper. Writes response body to stdout. Writes the HTTP status
+# code to a temp file at $_KB_STATUS_FILE so callers can read it after command
+# substitution (which runs in a subshell, losing global variable assignments).
+_KB_STATUS_FILE=$(mktemp)
+trap 'rm -f "$_KB_STATUS_FILE"' EXIT
+
+_kb_request() {
+    local method="$1" endpoint="$2"
+    shift 2
+    local url token tmp_body http_code
+    url="$(_resolve_url)"
+    tmp_body=$(mktemp)
+
+    local -a curl_args=(
+        -sS
+        -o "$tmp_body"
+        -w "%{http_code}"
+        -X "$method"
+        "${url}${endpoint}"
+        -H "Content-Type: application/json"
+    )
+
+    # Only attach auth header for endpoints that need it.
+    if [[ "$endpoint" != "/health" ]]; then
+        token=$(_resolve_token) || {
+            rm -f "$tmp_body"
+            return 1
+        }
+        curl_args+=(-H "Authorization: Bearer $token")
+    fi
+
+    # Append any remaining args (e.g. -d '...' for POST body).
+    curl_args+=("$@")
+
+    http_code=$(curl "${curl_args[@]}" 2>/dev/null) || {
+        echo "000" > "$_KB_STATUS_FILE"
+        rm -f "$tmp_body"
+        return 1
+    }
+    echo "$http_code" > "$_KB_STATUS_FILE"
+    cat "$tmp_body"
+    rm -f "$tmp_body"
+}
+
+_read_status() {
+    cat "$_KB_STATUS_FILE" 2>/dev/null || echo "000"
+}
+
+_health_success_json() {
+    local status="$1"
+    local response="$2"
+    python3 - "$status" "$response" <<'PY'
+import json
+import sys
+
+status = sys.argv[1]
+raw = sys.argv[2]
+try:
+    palantir = json.loads(raw)
+except json.JSONDecodeError:
+    palantir = {"raw": raw}
+print(json.dumps({
+    "ok": True,
+    "status": "ok",
+    "http_status": status,
+    "palantir": palantir,
+}))
+PY
+}
+
+_probe_auth_status() {
+    if [[ -z "${PALANTIR_KB_TOKEN:-}" ]]; then
+        echo "missing"
+        return
+    fi
+
+    # Empty question is validated before retrieval runs. A 400 therefore proves
+    # the bearer token was accepted without spending LLM tokens.
+    local status
+    _kb_request POST /kb -d '{"question":""}' >/dev/null 2>&1 || true
+    status="$(_read_status)"
+    case "$status" in
+        400) echo "ok" ;;
+        401|403) echo "invalid" ;;
+        404) echo "endpoint_missing" ;;
+        000) echo "unknown" ;;
+        *) echo "unexpected_http_$status" ;;
+    esac
+}
+
+# Commands
+
+cmd_ask() {
+    local json_mode=false
+    local question=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode=true; shift ;;
+            *)
+                if [[ -z "$question" ]]; then
+                    question="$1"
+                else
+                    question="$question $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    question="$(printf '%s' "$question" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ -z "$question" ]]; then
+        _err "Usage: agent-do kb ask \"<question>\""
+    fi
+
+    local body
+    body="$(_json_question_body "$question")"
+
+    local response
+    response=$(_kb_request POST /kb -d "$body") || {
+        echo "$response" >&2
+        exit 1
+    }
+
+    if [[ "$(_read_status)" != "200" ]]; then
+        echo "Error: API returned HTTP $(_read_status)" >&2
+        echo "$response" >&2
+        exit 1
+    fi
+
+    if $json_mode; then
+        echo "$response"
+        return
+    fi
+
+    # Human-readable formatting.
+    if command -v python3 &>/dev/null; then
+        echo "$response" | python3 << 'PYEOF_FORMAT'
+import json, sys
+
+try:
+    d = json.load(sys.stdin)
+except json.JSONDecodeError:
+    print("Error: invalid JSON response", file=sys.stderr)
+    sys.exit(1)
+
+if "error" in d:
+    print(f"Error: {d['error']}", file=sys.stderr)
+    sys.exit(1)
+
+print(d.get("answer", ""))
+print()
+
+sources = d.get("sources", [])
+if sources:
+    sim = d.get("retrievalSimilarity", {})
+    top1 = sim.get("top1", 0)
+    mean = sim.get("top10Mean", 0)
+    print(f"Sources (top similarity {top1:.3f}, mean {mean:.3f}):")
+    for i, s in enumerate(sources):
+        path = s.get("path", "?")
+        lines = ""
+        if s.get("startLine") and s.get("endLine"):
+            lines = f":{s['startLine']}-{s['endLine']}"
+        sym = f" :: {s['symbol']}" if s.get("symbol") else ""
+        sha = s.get("commitSha", "?")[:7]
+        sim_val = s.get("similarity", 0)
+        print(f"  [{i+1}] {path}{lines}{sym}  (sim={sim_val:.3f}, commit {sha})")
+
+fresh = d.get("freshness", {})
+age = fresh.get("latestCommitAge")
+if age:
+    print(f"Indexed: {age} ago.")
+
+if d.get("noContext"):
+    print()
+    print("[no high-confidence context - synthesizer was not invoked]")
+PYEOF_FORMAT
+    else
+        # Fallback: dump raw JSON.
+        echo "$response"
+    fi
+}
+
+cmd_health() {
+    local json_mode=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode=true; shift ;;
+            *)      shift ;;
+        esac
+    done
+
+    local response
+    response=$(_kb_request GET /health) || {
+        if $json_mode; then
+            printf '{"ok":false,"status":"unreachable","error":"unreachable","http_status":"%s"}\n' "$(_read_status)"
+        else
+            echo "Palantir API: unreachable"
+        fi
+        exit 1
+    }
+
+    local status
+    status="$(_read_status)"
+    if [[ "$status" != "200" ]]; then
+        if $json_mode; then
+            printf '{"ok":false,"status":"unhealthy","error":"unhealthy","http_status":"%s"}\n' "$status"
+        else
+            echo "Palantir API: unhealthy (HTTP $status)"
+            if [[ -n "$response" ]]; then
+                echo "$response"
+            fi
+        fi
+        exit 1
+    fi
+
+    if $json_mode; then
+        _health_success_json "$status" "$response"
+    else
+        echo "Palantir API: ok (HTTP $status)"
+    fi
+}
+
+cmd_snapshot() {
+    local json_mode=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode=true; shift ;;
+            *)      shift ;;
+        esac
+    done
+
+    local url token_present=false api_ok=false health_status auth_status
+    url="$(_resolve_url)"
+    auth_status="missing"
+
+    if [[ -n "${PALANTIR_KB_TOKEN:-}" ]]; then
+        token_present=true
+    fi
+
+    # Check API health.
+    _kb_request GET /health >/dev/null 2>&1 && {
+        if [[ "$(_read_status)" == "200" ]]; then
+            api_ok=true
+        fi
+    }
+    health_status="$(_read_status)"
+    auth_status="$(_probe_auth_status)"
+
+    if $json_mode; then
+        if type snapshot_begin &>/dev/null; then
+            snapshot_begin "agent-kb"
+            snapshot_field      "palantir_url"   "$url"
+            snapshot_bool_field "token_present"   "$token_present"
+            snapshot_bool_field "api_reachable"   "$api_ok"
+            snapshot_field      "http_status"     "$health_status"
+            snapshot_field      "auth_status"     "$auth_status"
+            snapshot_end
+        else
+            printf '{"tool":"agent-kb","palantir_url":"%s","token_present":%s,"api_reachable":%s,"http_status":"%s","auth_status":"%s"}\n' \
+                "$url" "$token_present" "$api_ok" "$health_status" "$auth_status"
+        fi
+    else
+        echo "agent-kb snapshot"
+        echo "  palantir url : $url"
+        echo "  token        : $( $token_present && echo "$auth_status" || echo "not set" )"
+        echo "  api          : $( $api_ok && echo "reachable" || echo "unreachable (HTTP $health_status)" )"
+    fi
+
+    if ! $api_ok || [[ "$auth_status" != "ok" ]]; then
+        exit 1
+    fi
+}
+
+# Dispatch
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    help|--help|-h)    show_help ;;
+    ask)               cmd_ask "$@" ;;
+    health)            cmd_health "$@" ;;
+    snapshot)          cmd_snapshot "$@" ;;
+    *)
+        echo "Unknown command: $cmd" >&2
+        echo "Try: agent-do kb --help" >&2
+        exit 1
+        ;;
+esac

@@ -1310,6 +1310,61 @@ tools:
         port-forward:
         - long_running
     concurrency: write
+  kb:
+    description: Query the Palantir knowledge base - semantic search + synthesis over every VID repo
+    capabilities:
+    - ask natural-language questions about the VID codebase and get synthesized answers with source citations
+    - retrieve architecture, entry points, dependencies, environment requirements, and deployment details for any indexed repo
+    - check Palantir API health and authentication status
+    commands:
+      ask: 'Ask the knowledge base: ask "<question>" [--json]'
+      health: 'Check API connectivity: health [--json]'
+      snapshot: 'Auth and connectivity state: snapshot [--json]'
+    examples:
+    - intent: ask how a service handles authentication
+      command: agent-do kb ask "how does versova-chat handle authentication?"
+    - intent: find what environment variables a project needs
+      command: agent-do kb ask "what env vars does mr-president need?" --json
+    - intent: check Palantir API health
+      command: agent-do kb health
+    credentials:
+      required:
+      - PALANTIR_KB_TOKEN
+      optional:
+      - PALANTIR_URL
+    routing:
+      discover_keywords:
+      - knowledge base
+      - palantir
+      - documentation
+      - how does
+      - what does
+      - codebase
+      - architecture
+      - repo
+      prompt_patterns:
+      - \bhow does .+ work\b
+      - \bwhat .+ does .+ (use|need|require)\b
+      - \bexplain .+ (architecture|flow|pipeline)\b
+      - \bpalantir\b
+      - \bknowledge base\b
+      recommended_entrypoints:
+      - agent-do kb ask "<question>"
+      - agent-do kb health
+      default_command: ask
+      readiness:
+        check: agent-do kb snapshot --json
+        fix: agent-do creds store PALANTIR_KB_TOKEN --stdin
+        note: Requires the Palantir API to be deployed with /kb enabled and a valid bearer token
+    contracts:
+      snapshot:
+      - ask
+      - snapshot
+      verify:
+      - health
+      attributes:
+        ask: [long_running]
+    concurrency: read
   git:
     description: Enhanced git operations
     capabilities:

@@ -8,6 +8,7 @@
 - New `own_state` contract attribute: tools whose only writes touch their own cache stay parallel-safe instead of being over-serialized.
 
 ### Added
+- `agent-do kb` — query the Palantir knowledge base over the VID codebase via `POST /kb` (`ask`, `health`, `snapshot` with `--json`; `PALANTIR_KB_TOKEN` via creds, `PALANTIR_URL` optional).
 - `agent-do harness contracts audit [--include-network] [--out FILE] [--notify]` — bounded behavioral probe of the declared read surface with tri-state grading (ok / clean-skip / fail); `--install-schedule [weekly|daily]` writes a launchd agent that audits automatically and notifies only on failures via `notify emit contracts_audit`. First run found 69 verbs violating their declared shape (mostly snapshot verbs ignoring `--json`) — filed for class-by-class fixes.
 - `agent-do harness contracts drift [--tool X]` — diffs registry command promises against each tool's `--help` (zero false positives across all 94 tools); the declared-but-unimplemented channel gates `./test.sh`.
 - `agent-do harness contracts surface --json` — machine-readable safety surface for orchestrators: read_only/write/destructive/sensitive/long_running/passthrough/own_state verb lists over the merged registry.
