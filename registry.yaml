@@ -1352,6 +1352,22 @@ tools:
       - agent-do kb ask "<question>"
       - agent-do kb health
       default_command: ask
+      raw_cli_equivalents:
+      - pattern: \bcurl\b.*\b/kb\b
+        replacement: agent-do kb ask
+        example: agent-do kb ask "<question>"
+        reason: agent-do kb standardizes Palantir KB auth handling and response formatting
+      - pattern: \bcurl\b.*\b/health\b
+        replacement: agent-do kb health
+        example: agent-do kb health
+        reason: agent-do kb health reports Palantir API reachability through the tool contract
+      project_signals:
+      - kb
+      - knowledge
+      - palantir
+      - has_kb_integration
+      - uses_palantir_kb
+      - kb_api_enabled
       readiness:
         check: agent-do kb snapshot --json
         fix: agent-do creds store PALANTIR_KB_TOKEN --stdin

@@ -21,9 +21,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/lib/snapshot.sh"    2>/dev/null || true
+source "$REPO_ROOT/lib/snapshot.sh" || {
+    echo "Error: failed to load lib/snapshot.sh" >&2
+    exit 1
+}
 # shellcheck source=/dev/null
-source "$REPO_ROOT/lib/json-output.sh" 2>/dev/null || true
+source "$REPO_ROOT/lib/json-output.sh" || {
+    echo "Error: failed to load lib/json-output.sh" >&2
+    exit 1
+}
+# shellcheck source=/dev/null
+source "$REPO_ROOT/lib/retry.sh" || {
+    echo "Error: failed to load lib/retry.sh" >&2
+    exit 1
+}
 
 PALANTIR_DEFAULT_URL="https://palantir-api-9moj.onrender.com"
 
@@ -91,16 +102,13 @@ trap 'rm -f "$_KB_STATUS_FILE"' EXIT
 _kb_request() {
     local method="$1" endpoint="$2"
     shift 2
-    local url token tmp_body http_code
+    local url token tmp_body http_code request_status
     url="$(_resolve_url)"
     tmp_body=$(mktemp)
 
-    local -a curl_args=(
-        -sS
-        -o "$tmp_body"
-        -w "%{http_code}"
-        -X "$method"
-        "${url}${endpoint}"
+    local -a request_args=(
+        --connect-timeout "${PALANTIR_CONNECT_TIMEOUT:-10}"
+        --max-time "${PALANTIR_MAX_TIME:-120}"
         -H "Content-Type: application/json"
     )
 
@@ -110,20 +118,21 @@ _kb_request() {
             rm -f "$tmp_body"
             return 1
         }
-        curl_args+=(-H "Authorization: Bearer $token")
+        request_args+=(-H "Authorization: Bearer $token")
     fi
 
     # Append any remaining args (e.g. -d '...' for POST body).
-    curl_args+=("$@")
+    request_args+=("$@")
 
-    http_code=$(curl "${curl_args[@]}" 2>/dev/null) || {
-        echo "000" > "$_KB_STATUS_FILE"
-        rm -f "$tmp_body"
-        return 1
-    }
+    api_request "$method" "${url}${endpoint}" "${request_args[@]}" > "$tmp_body" || request_status=$?
+    request_status="${request_status:-0}"
+    http_code="${API_REQUEST_STATUS:-000}"
     echo "$http_code" > "$_KB_STATUS_FILE"
     cat "$tmp_body"
     rm -f "$tmp_body"
+    if [[ "$http_code" == "0" || "$http_code" == "000" || -z "$http_code" ]]; then
+        return "${request_status:-1}"
+    fi
 }
 
 _read_status() {
@@ -213,18 +222,19 @@ cmd_ask() {
     fi
 
     if $json_mode; then
-        echo "$response"
+        OUTPUT_FORMAT=json
+        json_result "$response"
         return
     fi
 
     # Human-readable formatting.
     if command -v python3 &>/dev/null; then
-        echo "$response" | python3 << 'PYEOF_FORMAT'
+        python3 - "$response" << 'PYEOF_FORMAT'
 import json, sys
 
 try:
-    d = json.load(sys.stdin)
-except json.JSONDecodeError:
+    d = json.loads(sys.argv[1])
+except (json.JSONDecodeError, IndexError):
     print("Error: invalid JSON response", file=sys.stderr)
     sys.exit(1)
 
@@ -278,7 +288,8 @@ cmd_health() {
     local response
     response=$(_kb_request GET /health) || {
         if $json_mode; then
-            printf '{"ok":false,"status":"unreachable","error":"unreachable","http_status":"%s"}\n' "$(_read_status)"
+            OUTPUT_FORMAT=json
+            json_error "Palantir API unreachable" 1
         else
             echo "Palantir API: unreachable"
         fi
@@ -289,7 +300,8 @@ cmd_health() {
     status="$(_read_status)"
     if [[ "$status" != "200" ]]; then
         if $json_mode; then
-            printf '{"ok":false,"status":"unhealthy","error":"unhealthy","http_status":"%s"}\n' "$status"
+            OUTPUT_FORMAT=json
+            json_error "Palantir API unhealthy (HTTP $status)" 1
         else
             echo "Palantir API: unhealthy (HTTP $status)"
             if [[ -n "$response" ]]; then
@@ -300,7 +312,8 @@ cmd_health() {
     fi
 
     if $json_mode; then
-        _health_success_json "$status" "$response"
+        OUTPUT_FORMAT=json
+        json_result "$(_health_success_json "$status" "$response")"
     else
         echo "Palantir API: ok (HTTP $status)"
     fi

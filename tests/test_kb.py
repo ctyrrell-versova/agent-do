@@ -119,7 +119,11 @@ def configure_fake_curl(tmpdir: Path) -> dict[str, str]:
             if out_path:
                 with open(out_path, "w", encoding="utf-8") as fh:
                     json.dump(body, fh)
-            sys.stdout.write(status)
+                sys.stdout.write(status)
+            else:
+                sys.stdout.write(json.dumps(body))
+                sys.stdout.write("\\n")
+                sys.stdout.write(status)
             """
         ),
     )
@@ -141,12 +145,13 @@ def main() -> int:
         ask = run_agent(["kb", "ask", r"where is C:\\tmp?", "--json"], env)
         require(ask.returncode == 0, f"ask failed: {ask.stderr}")
         ask_payload = json.loads(ask.stdout)
-        require(ask_payload["question"] == r"where is C:\\tmp?", f"question did not round-trip: {ask_payload}")
+        require(ask_payload["success"] is True, f"ask should use json_result: {ask_payload}")
+        require(ask_payload["result"]["question"] == r"where is C:\\tmp?", f"question did not round-trip: {ask_payload}")
 
         dash_question = run_agent(["kb", "ask", r"-n C:\\tmp", "--json"], env)
         require(dash_question.returncode == 0, f"dash-prefixed ask failed: {dash_question.stderr}")
         dash_payload = json.loads(dash_question.stdout)
-        require(dash_payload["question"] == r"-n C:\\tmp", f"dash question did not round-trip: {dash_payload}")
+        require(dash_payload["result"]["question"] == r"-n C:\\tmp", f"dash question did not round-trip: {dash_payload}")
 
         env_404 = env.copy()
         env_404["FAKE_HEALTH_STATUS"] = "404"
@@ -157,8 +162,9 @@ def main() -> int:
         health_json = run_agent(["kb", "health", "--json"], env)
         require(health_json.returncode == 0, f"health --json failed: {health_json.stderr}")
         health_payload = json.loads(health_json.stdout)
-        require(health_payload["ok"] is True, f"unexpected health json: {health_payload}")
-        require(health_payload["palantir"]["status"] == "ok", f"unexpected health json: {health_payload}")
+        require(health_payload["success"] is True, f"unexpected health json: {health_payload}")
+        require(health_payload["result"]["ok"] is True, f"unexpected health json: {health_payload}")
+        require(health_payload["result"]["palantir"]["status"] == "ok", f"unexpected health json: {health_payload}")
 
         snapshot = run_agent(["kb", "snapshot", "--json"], env)
         require(snapshot.returncode == 0, f"snapshot should pass with valid auth: {snapshot.stderr}")
