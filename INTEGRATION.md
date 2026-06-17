@@ -329,16 +329,88 @@ the same three hook events:
 Tab inline completions use separate events (`beforeTabFileRead`, `afterTabFileEdit`).
 agent-do does not register Tab hooks.
 
+#### Cursor reads `~/.claude/settings.json`
+
+Cursor also loads **`~/.claude/settings.json` as "Claude user config"** and maps
+Claude hook names to Cursor events:
+
+| `~/.claude/settings.json` | Cursor event | Cursor label |
+|---------------------------|--------------|--------------|
+| `SessionStart` | `sessionStart` | Claude User config |
+| `UserPromptSubmit` | `beforeSubmitPrompt` | Claude User config |
+| `PreToolUse` matcher `Bash` | `preToolUse` matcher `Shell` | Claude User config |
+
+This is separate from `~/.cursor/hooks.json` (**User config**). If both register
+agent-do, hooks run twice (visible in the execution log as alternating
+`./hooks/...` and `~/.claude/hooks/...` paths).
+
+#### `sessionStart` startup race (important)
+
+On Cursor restart, hook initialization follows this order:
+
+1. Hooks service starts and immediately loads **Claude user config** from
+   `~/.claude/settings.json`
+2. `sessionStart` fires right away (`empty-state-draft`) — often **before**
+   `MainThreadShellExec` is ready
+3. `~/.cursor/hooks.json` (**User config**) loads ~2 seconds later
+
+If `SessionStart` is registered in `~/.claude/settings.json`, Cursor tries to
+run that command at step 2 and fails with:
+
+```text
+Error: MainThreadShellExec not initialized
+```
+
+The script never executes (0ms, no output). This is a Cursor startup timing issue,
+not an agent-do script bug.
+
+**Recommended when using Cursor Agent:**
+
+1. Install Cursor adapters: `./install.sh --cursor`
+2. Use `~/.cursor/hooks.json` for all three events (see template above)
+3. **Remove `SessionStart` from `~/.claude/settings.json`** while using Cursor
+4. Keep `UserPromptSubmit` and `PreToolUse` in `settings.json` only if you also
+   use Claude Code — the installed wrappers no-op instantly for Cursor payloads
+
+For **Claude Code only** (terminal app), restore `SessionStart` in
+`~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/agent-do-session-start.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`sessionStart` tooling reminders in Cursor are best-effort: even User config
+hooks may miss the first cold-start `sessionStart` because they load after the
+initial event. `beforeSubmitPrompt` and `preToolUse` are reliable once Cursor
+finishes initializing.
+
 #### Claude vs Cursor in the same editor
 
-Cursor may also load `~/.claude/hooks/` as **Claude User config**. If you install
-both Cursor adapters and Claude wrappers, every nudge fires twice (visible in the
-Hooks execution log as alternating `./hooks/...` and `~/.claude/hooks/...` paths).
+If you use **both** Cursor Agent and Claude Code on one machine:
 
-Pick one surface inside Cursor:
+| Surface | Hook registration | SessionStart |
+|---------|-------------------|--------------|
+| **Cursor Agent** | `~/.cursor/hooks.json` + `~/.cursor/hooks/` | User config only; omit from `settings.json` |
+| **Claude Code** | `~/.claude/settings.json` + `~/.claude/hooks/` | Include in `settings.json` |
 
-- **Recommended for Cursor Agent:** `~/.cursor/hooks/` + `~/.cursor/hooks.json` only
-- **Claude Code terminal app:** `~/.claude/hooks/` + `~/.claude/settings.json`
+The Claude wrappers under `~/.claude/hooks/` skip Cursor payloads when both are
+registered, so duplicate `beforeSubmitPrompt` / `preToolUse` entries are harmless
+but wasteful. Prefer Cursor-only registration inside Cursor when possible.
 
 #### Cursor hook troubleshooting
 
@@ -346,8 +418,9 @@ Pick one surface inside Cursor:
 |---------|--------------|-----|
 | Red banner: "Invalid hooks.json" / "Config version must be a number" | Unrelated plugin (e.g. Render) missing `"version": 1` | Fix or disable that plugin's hooks; blocks **all** hooks until resolved |
 | agent-do hooks listed but no nudges | Hooks blocked by global config error above | Resolve the unrelated plugin error first |
-| Every nudge appears twice | Both User config and Claude User config active | Use only `~/.cursor/hooks/` inside Cursor |
-| `sessionStart` red X on `~/.claude/hooks/agent-do-session-start.sh` | Cursor running Claude-format hook directly | Use Cursor adapters instead; Claude `.sh` hook expects `CLAUDE_ENV_FILE` |
+| Every nudge appears twice | Both User config and Claude User config active | Use only `~/.cursor/hooks/` inside Cursor; wrappers no-op but still run |
+| `sessionStart` red X, `MainThreadShellExec not initialized` | `SessionStart` in `~/.claude/settings.json` fires before shell exec is ready | **Remove `SessionStart` from `settings.json`** while using Cursor |
+| `sessionStart` red X on `~/.claude/hooks/agent-do-session-start.sh` | Stale Claude User config path or bash hook at startup | Remove `SessionStart` from `settings.json`; use `.py` wrapper for Claude Code |
 | Hook scripts not found | Wrong path in `hooks.json` | User hooks must use `./hooks/...` relative to `~/.cursor/` |
 
 The CLI alone (`agent-do` on PATH) works in Cursor terminals without hooks.

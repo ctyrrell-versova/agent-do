@@ -55,9 +55,26 @@ agent-do does not register Tab hooks.
 
 ## Avoid duplicate hooks
 
-If Cursor also loads your `~/.claude/hooks/` entries as **Claude User config**,
-you will see every agent-do nudge fire twice. Prefer **one** surface:
+Cursor loads **two** hook sources:
 
-- **Cursor only:** install `~/.cursor/hooks/` + `~/.cursor/hooks.json`; do not
-  register the same scripts under Claude User config in Cursor.
-- **Claude Code only:** use `~/.claude/hooks/` + `~/.claude/settings.json`.
+1. **User config** — `~/.cursor/hooks.json` (Cursor adapters)
+2. **Claude user config** — `~/.claude/settings.json` (same file Claude Code uses)
+
+If both register agent-do, hooks run twice. The Claude wrappers no-op for Cursor
+payloads, but still execute.
+
+## `sessionStart` and `~/.claude/settings.json`
+
+**Do not register `SessionStart` in `~/.claude/settings.json` while using
+Cursor.** Cursor reads that file as Claude user config and fires `sessionStart`
+before `MainThreadShellExec` is ready, producing:
+
+```text
+Error: MainThreadShellExec not initialized
+```
+
+Remove `SessionStart` from `settings.json` for Cursor. Keep `beforeSubmitPrompt`
+and `preToolUse` in `~/.cursor/hooks.json`. Restore `SessionStart` in
+`settings.json` only when using the Claude Code app.
+
+See `INTEGRATION.md` → "sessionStart startup race" for the full timeline.

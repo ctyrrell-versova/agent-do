@@ -415,6 +415,7 @@ if [ "$should_install_cursor" = "yes" ]; then
     fi
 
     info "Restart Cursor after merging hooks.json (see snippet at the end of this run)"
+    warn "If SessionStart is in ~/.claude/settings.json, remove it for Cursor (see INTEGRATION.md)"
     fi
 else
     info "Skipped Cursor install (use --cursor to force, or install ~/.cursor/ first)"
@@ -474,6 +475,11 @@ echo ""
 echo "Add the following to ~/.claude/settings.json under the \"hooks\" key:"
 echo "(If you already have hooks entries, merge these into the existing arrays)"
 echo ""
+echo "CURSOR USERS: omit the SessionStart block below while using Cursor Agent."
+echo "Cursor loads ~/.claude/settings.json as claude-user config and fires"
+echo "sessionStart before shell exec is ready (MainThreadShellExec not initialized)."
+echo "Use ~/.cursor/hooks.json for sessionStart instead. See INTEGRATION.md."
+echo ""
 cat << 'SETTINGS_JSON'
 {
   "hooks": {
@@ -483,7 +489,7 @@ cat << 'SETTINGS_JSON'
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/agent-do-session-start.sh",
+            "command": "~/.claude/hooks/agent-do-session-start.py",
             "timeout": 10
           }
         ]
