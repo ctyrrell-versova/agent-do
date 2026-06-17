@@ -206,7 +206,13 @@ install_py_wrapper() {
 import os
 import runpy
 import sys
+import io
+import json
 from pathlib import Path
+
+
+def _is_cursor_payload(raw: dict) -> bool:
+    return any(key in raw for key in ("conversation_id", "cursor_version", "workspace_roots"))
 
 
 def _resolve_repo():
@@ -227,6 +233,14 @@ def _resolve_repo():
 
 
 def main():
+    payload = sys.stdin.read()
+    try:
+        raw = json.loads(payload)
+        if isinstance(raw, dict) and _is_cursor_payload(raw):
+            return
+    except json.JSONDecodeError:
+        pass
+
     repo = _resolve_repo()
     if repo is None:
         sys.stderr.write(
@@ -239,6 +253,7 @@ def main():
         sys.stderr.write(f"[$hook_name wrapper] canonical hook missing: {hook}\\n")
         return
     sys.path.insert(0, str(repo / "lib"))
+    sys.stdin = io.StringIO(payload)
     runpy.run_path(str(hook), run_name="__main__")
 
 
@@ -259,6 +274,24 @@ install_sh_wrapper() {
 # Delegates to the canonical hook under the agent-do repo so that future
 # \`git pull\` updates flow through without re-running install.sh.
 set -uo pipefail
+
+INPUT=\$(cat)
+
+if printf '%s' "\$INPUT" | python3 -c '
+import json, sys
+try:
+    raw = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(raw, dict):
+    raise SystemExit(1)
+if any(key in raw for key in ("conversation_id", "cursor_version", "workspace_roots")):
+    raise SystemExit(0)
+raise SystemExit(1)
+' 2>/dev/null; then
+    exit 0
+fi
+
 repo="\${AGENT_DO_REPO:-\$(cat "\$HOME/.agent-do/install-path" 2>/dev/null)}"
 if [ -z "\$repo" ] || [ ! -d "\$repo" ]; then
     echo "[$hook_name wrapper] could not resolve agent-do repo; set AGENT_DO_REPO or run install.sh" >&2
@@ -269,7 +302,7 @@ if [ ! -x "\$canonical" ]; then
     echo "[$hook_name wrapper] canonical hook missing or not executable: \$canonical" >&2
     exit 0
 fi
-exec "\$canonical" "\$@"
+printf '%s' "\$INPUT" | exec "\$canonical" "\$@"
 WRAPPER
     chmod +x "$installed"
 }
@@ -353,6 +386,9 @@ if [ "$should_install_cursor" = "yes" ]; then
     step "Installing Cursor hooks"
     mkdir -p "$CURSOR_HOOKS_DIR"
 
+    if [ ! -f "$CURSOR_HOOKS_SRC/cursor_compat.py" ]; then
+        err "Cursor compatibility library not found: $CURSOR_HOOKS_SRC/cursor_compat.py"
+    else
     CURSOR_HOOK_FILES=(
         "cursor_compat.py"
         "agent-do-session-start.py"
@@ -373,12 +409,13 @@ if [ "$should_install_cursor" = "yes" ]; then
 
     if [ ! -f "$HOME/.cursor/hooks.json" ]; then
         cp "$CURSOR_HOOKS_SRC/hooks.json.example" "$HOME/.cursor/hooks.json"
-        info "Created ~/.cursor/hooks.json from template"
+        info "Created $HOME/.cursor/hooks.json from template"
     else
-        warn "~/.cursor/hooks.json already exists — merge hooks/cursor/hooks.json.example manually"
+        warn "$HOME/.cursor/hooks.json already exists — merge hooks/cursor/hooks.json.example manually"
     fi
 
     info "Restart Cursor after merging hooks.json (see snippet at the end of this run)"
+    fi
 else
     info "Skipped Cursor install (use --cursor to force, or install ~/.cursor/ first)"
 fi

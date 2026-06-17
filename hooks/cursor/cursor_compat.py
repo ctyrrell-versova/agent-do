@@ -84,24 +84,19 @@ def run_canonical_hook(repo: Path, hook_rel: str, stdin_payload: dict[str, Any])
     if lib_dir not in sys.path:
         sys.path.insert(0, lib_dir)
 
-    if hook.suffix == ".py":
+    cmd = [sys.executable, str(hook)] if hook.suffix == ".py" else [str(hook)]
+    try:
         proc = subprocess.run(
-            [sys.executable, str(hook)],
+            cmd,
             input=json.dumps(stdin_payload),
             text=True,
             capture_output=True,
             check=False,
             env=env,
+            timeout=8,
         )
-    else:
-        proc = subprocess.run(
-            [str(hook)],
-            input=json.dumps(stdin_payload),
-            text=True,
-            capture_output=True,
-            check=False,
-            env=env,
-        )
+    except subprocess.TimeoutExpired:
+        return {}
 
     if proc.returncode != 0 or not proc.stdout.strip():
         return {}
