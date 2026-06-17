@@ -1,24 +1,27 @@
 #!/bin/bash
-# install.sh — Idempotent installer for agent-do + Claude Code (+ optional Codex) hooks
+# install.sh — Idempotent installer for agent-do + Claude Code (+ optional Codex/Cursor) hooks
 #
 # What it does:
 #   1. Symlinks agent-do into ~/.local/bin (adds to PATH)
 #   2. Writes breadcrumb at ~/.agent-do/install-path
 #   3. Copies Claude Code hooks to ~/.claude/hooks/
 #   4. Optional: Codex hooks to ~/.codex/hooks/ (--codex or auto-detected)
-#   5. Installs Python dependencies
-#   6. Optional: npm install for browse/unbrowse
-#   7. Optional: cargo build for manna
-#   8. Runs agent-do --health
-#   9. Prints Claude settings.json snippet (doesn't auto-modify)
-#  10. Prints Codex hooks.json snippet if Codex install ran
-#  11. Prints CLAUDE.md snippet for projects
+#   5. Optional: Cursor hooks to ~/.cursor/hooks/ (--cursor or auto-detected)
+#   6. Installs Python dependencies
+#   7. Optional: npm install for browse/unbrowse
+#   8. Optional: cargo build for manna
+#   9. Runs agent-do --health
+#  10. Prints Claude settings.json snippet (doesn't auto-modify)
+#  11. Prints Codex/Cursor hooks.json snippets when those installs ran
+#  12. Prints CLAUDE.md snippet for projects
 #
 # Usage:
-#   ./install.sh              # Install (auto-installs Codex hooks if ~/.codex/ exists)
+#   ./install.sh              # Install (auto-installs Codex/Cursor hooks when dirs exist)
 #   ./install.sh --codex      # Force Codex install even without ~/.codex/
 #   ./install.sh --no-codex   # Skip Codex install even when ~/.codex/ exists
-#   ./install.sh --uninstall  # Remove symlink + hooks (both Claude and Codex)
+#   ./install.sh --cursor     # Force Cursor install even without ~/.cursor/
+#   ./install.sh --no-cursor  # Skip Cursor install even when ~/.cursor/ exists
+#   ./install.sh --uninstall  # Remove symlink + hooks (all surfaces)
 
 set -euo pipefail
 
@@ -28,15 +31,20 @@ SYMLINK_PATH="$SYMLINK_DIR/agent-do"
 AGENT_DO_HOME="${AGENT_DO_HOME:-$HOME/.agent-do}"
 CLAUDE_HOOKS_DIR="$HOME/.claude/hooks"
 CODEX_HOOKS_DIR="$HOME/.codex/hooks"
+CURSOR_HOOKS_DIR="$HOME/.cursor/hooks"
 HOOKS_DIR="$REPO_DIR/hooks"
 CODEX_HOOKS_SRC="$HOOKS_DIR/codex"
+CURSOR_HOOKS_SRC="$HOOKS_DIR/cursor"
 
 # Decide whether to install Codex hooks. Default: auto (yes if ~/.codex/ exists).
 INSTALL_CODEX="auto"
+INSTALL_CURSOR="auto"
 for arg in "$@"; do
     case "$arg" in
-        --codex)    INSTALL_CODEX="yes" ;;
-        --no-codex) INSTALL_CODEX="no"  ;;
+        --codex)      INSTALL_CODEX="yes" ;;
+        --no-codex)   INSTALL_CODEX="no"  ;;
+        --cursor)     INSTALL_CURSOR="yes" ;;
+        --no-cursor)  INSTALL_CURSOR="no"  ;;
     esac
 done
 
@@ -104,9 +112,23 @@ uninstall() {
         fi
     done
 
+    # Remove Cursor hooks that agent-do installs (only those, not personal hooks)
+    local cursor_hooks=(
+        "agent-do-session-start.py"
+        "agent-do-prompt-router.py"
+        "agent-do-pretooluse-check.py"
+        "cursor_compat.py"
+    )
+    for hook in "${cursor_hooks[@]}"; do
+        if [ -f "$CURSOR_HOOKS_DIR/$hook" ]; then
+            rm "$CURSOR_HOOKS_DIR/$hook"
+            info "Removed Cursor hook $CURSOR_HOOKS_DIR/$hook"
+        fi
+    done
+
     echo ""
     warn "Remember to remove the agent-do hooks from ~/.claude/settings.json"
-    warn "and ~/.codex/hooks.json. Search for 'agent-do' in the hooks sections."
+    warn "and ~/.codex/hooks.json and ~/.cursor/hooks.json."
     echo ""
     info "Uninstall complete. Repo at $REPO_DIR is untouched."
     exit 0
@@ -320,6 +342,47 @@ else
     info "Skipped Codex install (use --codex to force, or install ~/.codex/ first)"
 fi
 
+# 3c. Optional: Cursor hooks (adapters copied from hooks/cursor/)
+should_install_cursor="no"
+case "$INSTALL_CURSOR" in
+    yes)  should_install_cursor="yes" ;;
+    auto) [ -d "$HOME/.cursor" ] && should_install_cursor="yes" ;;
+esac
+
+if [ "$should_install_cursor" = "yes" ]; then
+    step "Installing Cursor hooks"
+    mkdir -p "$CURSOR_HOOKS_DIR"
+
+    CURSOR_HOOK_FILES=(
+        "cursor_compat.py"
+        "agent-do-session-start.py"
+        "agent-do-prompt-router.py"
+        "agent-do-pretooluse-check.py"
+    )
+    for name in "${CURSOR_HOOK_FILES[@]}"; do
+        src="$CURSOR_HOOKS_SRC/$name"
+        dst="$CURSOR_HOOKS_DIR/$name"
+        if [ ! -f "$src" ]; then
+            err "Cursor hook source not found: $src"
+            continue
+        fi
+        cp "$src" "$dst"
+        chmod +x "$dst"
+        info "Installed Cursor adapter: $name"
+    done
+
+    if [ ! -f "$HOME/.cursor/hooks.json" ]; then
+        cp "$CURSOR_HOOKS_SRC/hooks.json.example" "$HOME/.cursor/hooks.json"
+        info "Created ~/.cursor/hooks.json from template"
+    else
+        warn "~/.cursor/hooks.json already exists — merge hooks/cursor/hooks.json.example manually"
+    fi
+
+    info "Restart Cursor after merging hooks.json (see snippet at the end of this run)"
+else
+    info "Skipped Cursor install (use --cursor to force, or install ~/.cursor/ first)"
+fi
+
 # 4. Python dependencies
 step "Installing Python dependencies"
 if command -v pip3 &>/dev/null; then
@@ -438,6 +501,24 @@ if [ "$should_install_codex" = "yes" ]; then
     echo ""
 fi
 
+# 8c. Print Cursor hooks.json snippet if Cursor install ran
+if [ "$should_install_cursor" = "yes" ]; then
+    step "Cursor hooks.json configuration"
+    echo ""
+    echo "Cursor requires \"version\": 1 in ~/.cursor/hooks.json."
+    echo "User hook commands run relative to ~/.cursor/ (use ./hooks/... paths)."
+    echo ""
+    echo "Merge the following into ~/.cursor/hooks.json (full template is at"
+    echo "$CURSOR_HOOKS_SRC/hooks.json.example):"
+    echo ""
+    cat "$CURSOR_HOOKS_SRC/hooks.json.example"
+    echo ""
+    echo "After installing, open Cursor Settings → Hooks to confirm User config entries."
+    echo "Inside Cursor Agent (Composer), the same hooks fire on sessionStart,"
+    echo "beforeSubmitPrompt, and preToolUse (Shell)."
+    echo ""
+fi
+
 # 9. Print CLAUDE.md snippet
 step "Project CLAUDE.md snippet"
 echo ""
@@ -466,7 +547,8 @@ echo -e "\n${BOLD}${GREEN}Installation complete!${NC}"
 echo ""
 echo "Next steps:"
 echo "  1. Merge the settings.json snippet above into ~/.claude/settings.json"
-echo "  2. Optionally add the CLAUDE.md snippet to your project"
-echo "  3. Restart Claude Code to pick up the new hooks"
+echo "  2. If Cursor install ran, merge ~/.cursor/hooks.json and restart Cursor"
+echo "  3. Optionally add the CLAUDE.md snippet to your project"
+echo "  4. Restart Claude Code / Cursor to pick up the new hooks"
 echo ""
 echo "Verify: agent-do --list"

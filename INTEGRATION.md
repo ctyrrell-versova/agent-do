@@ -1,14 +1,16 @@
-# Claude Code And Codex Integration
+# Claude Code, Codex, And Cursor Integration
 
 agent-do ships hooks that teach coding agents to prefer `agent-do` tools over raw CLI commands. The hooks use a nudge approach: they add context reminders but do not block commands by default.
 
 ## Quick Setup
 
 ```bash
-./install.sh                # Installs Claude hooks; auto-installs Codex hooks if ~/.codex/ exists
+./install.sh                # Installs Claude hooks; auto-installs Codex/Cursor hooks when detected
 ./install.sh --codex        # Force Codex hook install even without ~/.codex/
 ./install.sh --no-codex     # Skip Codex install even when ~/.codex/ is present
-./install.sh --uninstall    # Remove all installed hooks (both surfaces)
+./install.sh --cursor       # Force Cursor hook install even without ~/.cursor/
+./install.sh --no-cursor    # Skip Cursor install even when ~/.cursor/ is present
+./install.sh --uninstall    # Remove all installed hooks (all surfaces)
 ```
 
 The installer:
@@ -16,8 +18,9 @@ The installer:
 2. Writes the `~/.agent-do/install-path` breadcrumb (used by wrappers to find the repo)
 3. Installs Claude Code hook wrappers to `~/.claude/hooks/`
 4. Optionally installs Codex hook wrappers to `~/.codex/hooks/`
-5. Installs Python dependencies
-6. Prints a Claude `settings.json` snippet and (when Codex installed) a `~/.codex/hooks.json` template
+5. Optionally installs Cursor hook adapters to `~/.cursor/hooks/` and prints `~/.cursor/hooks.json`
+6. Installs Python dependencies
+7. Prints a Claude `settings.json` snippet and (when Codex/Cursor installed) hook registration templates
 
 ## Upgrade Model: Thin Wrappers
 
@@ -25,6 +28,10 @@ Installed hooks under `~/.claude/hooks/` and `~/.codex/hooks/` are NOT full
 copies of the repo files. They are tiny **wrappers** (Python `runpy.run_path`
 for `.py`, `exec` for `.sh`) that resolve the repo root and delegate to the
 canonical hook at `<repo>/hooks/<file>` or `<repo>/hooks/codex/<file>`.
+
+Cursor adapters under `~/.cursor/hooks/` translate Cursor's hook JSON into the
+same canonical Claude hooks, then translate responses back into Cursor's flat
+`additional_context` / `continue` / `permission` fields. See `hooks/cursor/`.
 
 This means:
 
@@ -76,10 +83,18 @@ hooks/
     stop-quality-gate.py
     hooks.json.example
     README.md
+  cursor/                          # Cursor adapters (JSON translation layer)
+    agent-do-session-start.py
+    agent-do-prompt-router.py
+    agent-do-pretooluse-check.py
+    cursor_compat.py
+    hooks.json.example
+    README.md
 ```
 
-The installer writes thin wrappers at `~/.claude/hooks/` and `~/.codex/hooks/`
-that delegate to these canonical files. See "Upgrade Model" above.
+The installer writes thin wrappers at `~/.claude/hooks/` and `~/.codex/hooks/`,
+and copies Cursor adapters to `~/.cursor/hooks/`. All delegate to the canonical
+Claude hooks. See "Upgrade Model" above.
 
 ## The 3-Layer Hook System
 
@@ -258,6 +273,86 @@ Codex uses `~/.codex/hooks.json` instead of Claude's `settings.json`. The instal
 
 The Codex wrappers under `~/.codex/hooks/` are thin: each one uses `runpy.run_path` to forward stdin/stdout to the matching repo hook at `<repo>/hooks/`. The repo is resolved via `AGENT_DO_REPO`, the `~/.agent-do/install-path` breadcrumb, or a `~/Custom-Coding/agent-do` fallback. Edits to the repo hooks flow through to Codex automatically; no reinstall needed.
 
+### Cursor registration
+
+Cursor uses `~/.cursor/hooks.json` with `"version": 1`. User hook commands run
+relative to `~/.cursor/`, so paths look like `./hooks/agent-do-session-start.py`.
+
+```bash
+./install.sh --cursor
+```
+
+The installer copies adapters from `hooks/cursor/` into `~/.cursor/hooks/` and
+prints the registration template. The full template lives at
+`hooks/cursor/hooks.json.example`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "python3 ./hooks/agent-do-session-start.py",
+        "timeout": 15
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "python3 ./hooks/agent-do-prompt-router.py",
+        "timeout": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "matcher": "Shell",
+        "command": "python3 ./hooks/agent-do-pretooluse-check.py",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+Restart Cursor after installing. Confirm under **Settings → Hooks → User config**.
+
+#### Cursor Agent (Composer)
+
+Cursor's multi-step **Agent** mode — the workflow formerly called Composer — uses
+the same three hook events:
+
+| When | Cursor event | agent-do adapter |
+|------|--------------|------------------|
+| New Agent chat opens | `sessionStart` | tooling reminder + project-scoped tools |
+| You send a message | `beforeSubmitPrompt` | prompt routing / tool suggestions |
+| Agent runs a shell command | `preToolUse` matcher `Shell` | raw CLI → agent-do nudges |
+
+Tab inline completions use separate events (`beforeTabFileRead`, `afterTabFileEdit`).
+agent-do does not register Tab hooks.
+
+#### Claude vs Cursor in the same editor
+
+Cursor may also load `~/.claude/hooks/` as **Claude User config**. If you install
+both Cursor adapters and Claude wrappers, every nudge fires twice (visible in the
+Hooks execution log as alternating `./hooks/...` and `~/.claude/hooks/...` paths).
+
+Pick one surface inside Cursor:
+
+- **Recommended for Cursor Agent:** `~/.cursor/hooks/` + `~/.cursor/hooks.json` only
+- **Claude Code terminal app:** `~/.claude/hooks/` + `~/.claude/settings.json`
+
+#### Cursor hook troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Red banner: "Invalid hooks.json" / "Config version must be a number" | Unrelated plugin (e.g. Render) missing `"version": 1` | Fix or disable that plugin's hooks; blocks **all** hooks until resolved |
+| agent-do hooks listed but no nudges | Hooks blocked by global config error above | Resolve the unrelated plugin error first |
+| Every nudge appears twice | Both User config and Claude User config active | Use only `~/.cursor/hooks/` inside Cursor |
+| `sessionStart` red X on `~/.claude/hooks/agent-do-session-start.sh` | Cursor running Claude-format hook directly | Use Cursor adapters instead; Claude `.sh` hook expects `CLAUDE_ENV_FILE` |
+| Hook scripts not found | Wrong path in `hooks.json` | User hooks must use `./hooks/...` relative to `~/.cursor/` |
+
+The CLI alone (`agent-do` on PATH) works in Cursor terminals without hooks.
+Hooks add automatic nudges inside Agent sessions.
+
 ## CLAUDE.md Integration
 
 Add this to your project's `CLAUDE.md` so Claude knows about agent-do even without hooks:
@@ -338,4 +433,6 @@ All hooks work independently. You can install any subset.
 ./install.sh --uninstall
 ```
 
-This removes the symlink, breadcrumb, and hook files. You'll need to manually remove the hook entries from `~/.claude/settings.json`.
+This removes the symlink, breadcrumb, and hook files. You'll need to manually
+remove the agent-do entries from `~/.claude/settings.json`, `~/.codex/hooks.json`,
+and `~/.cursor/hooks.json`.

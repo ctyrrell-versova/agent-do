@@ -91,7 +91,7 @@ cd agent-do
 The installer can symlink `agent-do` into `PATH`, install dependencies, and copy
 agent hooks into place.
 
-See [INTEGRATION.md](INTEGRATION.md) for Claude Code and Codex hook wiring.
+See [INTEGRATION.md](INTEGRATION.md) for Claude Code, Codex, and Cursor hook wiring.
 
 ## First Run
 

@@ -290,7 +290,7 @@ agent-do works with any AI coding assistant that can execute shell commands:
 | Harness | Integration | Config |
 |---------|-------------|--------|
 | Claude Code | CLAUDE.md instructions + hooks | `CLAUDE.md`, `.claude/hooks/` |
-| Cursor | Rules file + shell commands | `.cursorrules` |
+| Cursor | Agent hooks + optional rules | `~/.cursor/hooks.json`, `~/.cursor/hooks/` |
 | Aider | Config file + shell access | `.aider.conf.yml` |
 | Continue.dev | Context providers + shell | `.continue/config.json` |
 
