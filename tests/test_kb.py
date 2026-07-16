@@ -148,6 +148,15 @@ def main() -> int:
         require(ask_payload["success"] is True, f"ask should use json_result: {ask_payload}")
         require(ask_payload["result"]["question"] == r"where is C:\\tmp?", f"question did not round-trip: {ask_payload}")
 
+        captured_body = tmpdir / "captured-body.json"
+        env_capture = env.copy()
+        env_capture["CAPTURE_CURL_BODY"] = str(captured_body)
+        control_question = "line1\n\"quoted\"\tvalue"
+        escaped = run_agent(["kb", "ask", control_question, "--json"], env_capture)
+        require(escaped.returncode == 0, f"escaped ask failed: {escaped.stderr}")
+        sent_payload = json.loads(captured_body.read_text(encoding="utf-8"))
+        require(sent_payload["question"] == control_question, f"body encoding mismatch: {sent_payload}")
+
         dash_question = run_agent(["kb", "ask", r"-n C:\\tmp", "--json"], env)
         require(dash_question.returncode == 0, f"dash-prefixed ask failed: {dash_question.stderr}")
         dash_payload = json.loads(dash_question.stdout)

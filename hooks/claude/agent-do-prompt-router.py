@@ -253,14 +253,34 @@ def fallback_focus_command(prompt: str, cwd: str | None) -> str:
 
 
 def compact_peers(active_peers: list[dict]) -> list[dict]:
-    return [
+    peers = [
         {
             "agent": peer.get("alias") or peer.get("agent_id"),
             "goal": ((peer.get("focus") or {}).get("goal")) or "",
             "paths": ((peer.get("focus") or {}).get("paths")) or [],
+            "age": peer.get("age") or "",
+            "phase": peer.get("phase") or "",
+            "mode": peer.get("mode") or "writer",
+            "role": peer.get("role") or "",
         }
         for peer in active_peers[:8]
     ]
+    peers.sort(key=lambda item: 0 if item["mode"] == "writer" else 1)
+    return peers
+
+
+def format_peer_line(peer: dict) -> str:
+    label = str(peer.get("agent"))
+    details = []
+    if peer.get("mode") == "read-only":
+        details.append(f"{peer.get('role') or 'auditor'}, read-only")
+    if peer.get("phase"):
+        details.append(f"phase:{peer['phase']}")
+    if peer.get("age"):
+        details.append(peer["age"])
+    suffix = f" ({', '.join(details)})" if details else ""
+    goal = f" goal: {peer['goal']}" if peer.get("goal") else ""
+    return f"- {label}{suffix}{goal}"
 
 
 def compact_interrupts(interrupts: list[dict]) -> list[dict]:
@@ -532,10 +552,11 @@ def format_coord_requirement(
     if not valid_focus_command(command):
         command = fallback_focus_command(prompt, cwd)
 
-    peer_lines = []
-    for peer in compact_peers(coord_state.get("active_peers") or []):
-        suffix = f" goal: {peer['goal']}" if peer.get("goal") else ""
-        peer_lines.append(f"- {peer.get('agent')}{suffix}")
+    peer_lines = [format_peer_line(peer) for peer in compact_peers(coord_state.get("active_peers") or [])]
+    counts = coord_state.get("peer_counts") or {}
+    hidden = int(counts.get("dead", 0)) + int(counts.get("stale", 0)) + int(counts.get("stopped", 0))
+    if hidden:
+        peer_lines.append(f"- ({hidden} dead/stopped/stale sessions on the board, not shown)")
     peers = "\n".join(peer_lines) if peer_lines else "- active peer present"
 
     return (
@@ -649,8 +670,50 @@ def resolve_agent_do_binary() -> str | None:
     return None
 
 
+def run_bounded(
+    cmd: list[str],
+    cwd: str | None,
+    env: dict | None,
+    timeout: float,
+) -> tuple[int | None, str]:
+    """Run with a hard wall-clock bound, SIGKILLing the whole process group.
+
+    A plain subprocess.run(timeout=...) kills only the direct child; a wedged
+    grandchild keeps the stdout pipe open and communicate() blocks anyway.
+    start_new_session gives the child its own group so the kill takes the
+    whole tree down and the pipe closes.
+    """
+    import signal
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return None, ""
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        try:
+            proc.communicate(timeout=1.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return None, ""
+
+
 def load_coord_state(cwd: str | None) -> dict:
-    state = {"active_peers": [], "focus_goal": "", "interrupts": []}
+    state = {"active_peers": [], "peer_counts": {}, "focus_goal": "", "interrupts": []}
     if not cwd:
         return state
     agent_do = resolve_agent_do_binary()
@@ -660,33 +723,30 @@ def load_coord_state(cwd: str | None) -> dict:
     hook_env = os.environ.copy()
     hook_env["AGENT_DO_TELEMETRY_SUPPRESS"] = "1"
 
-    touched = subprocess.run(
-        [agent_do, "coord", "touch", "--json"],
-        cwd=cwd,
-        env=hook_env,
-        text=True,
-        capture_output=True,
-        check=False,
+    # Hard per-call budget: the hook itself gets 5s from Claude Code, and a
+    # slow or wedged agent-do spawn must degrade to "no coord context", not
+    # eat the whole hook (which discards ALL hook output).
+    touch_rc, touch_out = run_bounded(
+        [agent_do, "coord", "touch", "--json"], cwd=cwd, env=hook_env, timeout=2.0
     )
-    if touched.returncode != 0 or not touched.stdout.strip():
+    if touch_rc != 0 or not touch_out.strip():
         return state
 
-    touch_payload = json.loads(touched.stdout)
+    touch_payload = json.loads(touch_out)
     state["active_peers"] = touch_payload.get("active_peers", [])
+    state["peer_counts"] = touch_payload.get("peer_counts", {})
     state["focus_goal"] = ((touch_payload.get("focus") or {}).get("goal")) or ""
 
-    interrupts_run = subprocess.run(
+    interrupts_rc, interrupts_out = run_bounded(
         [agent_do, "coord", "interrupts", "--json", "--limit", "5"],
         cwd=cwd,
         env=hook_env,
-        text=True,
-        capture_output=True,
-        check=False,
+        timeout=2.0,
     )
-    if interrupts_run.returncode != 0 or not interrupts_run.stdout.strip():
+    if interrupts_rc != 0 or not interrupts_out.strip():
         interrupts_payload = {"interrupts": []}
     else:
-        interrupts_payload = json.loads(interrupts_run.stdout)
+        interrupts_payload = json.loads(interrupts_out)
 
     state["interrupts"] = interrupts_payload.get("interrupts", [])
     return state
