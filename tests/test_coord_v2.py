@@ -81,6 +81,17 @@ def lstart(pid: int) -> str:
     ).stdout.strip()
 
 
+def process_name(pid: int) -> str:
+    return Path(
+        subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    ).name
+
+
 def make_project(tmp_path: Path, name: str) -> Path:
     project = tmp_path / name
     project.mkdir()
@@ -666,7 +677,10 @@ def test_agent_process_anchor(tmp_path: Path, env_base: dict[str, str]) -> None:
 
     env = clean_env(env_base)
     env["TMUX_PANE"] = "%40"
-    env["AGENT_DO_COORD_ANCHOR_NAMES"] = "python3"
+    # setup-python resolves `python3` to a versioned executable on GitHub's
+    # macOS runners (for example, python3.11). Match the process name that
+    # `agent-coord` will actually read from `ps`, not the invocation alias.
+    env["AGENT_DO_COORD_ANCHOR_NAMES"] = process_name(os.getpid())
     result = subprocess.run(
         ["python3", str(intermediary), str(out_dir), str(AGENT_DO), str(project)],
         env=env,
