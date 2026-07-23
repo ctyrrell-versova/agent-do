@@ -116,12 +116,14 @@ an install-path breadcrumb under `~/.agent-do/`, generates the discovery index
 from `registry.yaml`, installs Python dependencies, offers optional npm and
 cargo builds for the browser and board tools, and runs a health check.
 
-Hooks install as thin wrappers that delegate into the repo, so `git pull`
-updates hook behavior without re-running the installer. Claude Code hooks always
-install; Codex hooks install when `~/.codex/` exists (`--codex` forces,
-`--no-codex` skips). The installer prints the settings.json registration snippet
-and never edits your settings itself. `./install.sh --uninstall` removes the
-symlink and the wrappers.
+Hooks install as thin wrappers (Claude Code / Codex) or self-contained adapters
+(Cursor) that delegate into the repo, so `git pull` updates hook behavior
+without re-running the installer. Claude Code hooks always install; Codex hooks
+install when `~/.codex/` exists (`--codex` forces, `--no-codex` skips); Cursor
+adapters install when `~/.cursor/` exists (`--cursor` forces, `--no-cursor`
+skips). The installer prints the registration snippets and never edits your
+settings itself. `./install.sh --uninstall` removes the symlink, wrappers, and
+owned Cursor adapters.
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for hook registration and behavior.
 
@@ -372,7 +374,7 @@ The supporting layers are:
 - `models.yaml` for internal model roles
 - `tools/` for tool implementations
 - `lib/` for shared helpers
-- `hooks/claude/` and `hooks/codex/` for harness integration
+- `hooks/claude/`, `hooks/codex/`, and `hooks/cursor/` for harness integration
 - `bin/` for routing, health, bootstrap, and discovery
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system map.

@@ -3,7 +3,7 @@
 agent-do works with any coding agent that can execute shell commands. Two integration depths exist:
 
 1. **Instructions only**: document the CLI in the harness's instruction file (CLAUDE.md, .cursorrules, AGENTS.md). No hooks, no state; the agent simply knows the tools exist.
-2. **The ambient loop**: install the shipped Claude Code (and optionally Codex) hooks. Sessions then start with the project's work board and drift report injected, prompts get high-confidence tool routing, raw commands get nudged toward native equivalents, and session teardown retires coordination presence and writes the reconcile report the next session greets with.
+2. **The ambient loop**: install the shipped Claude Code (and optionally Codex or Cursor) hooks. Sessions then start with the project's work board and drift report injected, prompts get high-confidence tool routing, raw commands get nudged toward native equivalents, and session teardown retires coordination presence and writes the reconcile report the next session greets with.
 
 Everything below is presence-gated: repos without a `.manna/` board or a coord board see none of the board machinery, and the hooks degrade to the plain tooling reminder.
 
@@ -15,7 +15,7 @@ Everything below is presence-gated: repos without a `.manna/` board or a coord b
 ./install.sh --no-codex     # Skip Codex install even when ~/.codex/ is present
 ./install.sh --cursor       # Force Cursor adapter install even without ~/.cursor/
 ./install.sh --no-cursor    # Skip Cursor install even when ~/.cursor/ is present
-./install.sh --uninstall    # Remove symlink, breadcrumb, generated index, and hook wrappers
+./install.sh --uninstall    # Remove symlink, breadcrumb, generated index, hook wrappers, and owned Cursor adapters
 ```
 
 What the installer actually does, in order:
@@ -133,10 +133,13 @@ On Cursor restart, the hooks service loads Claude user config from `~/.claude/se
 
 ### Claude Code and Cursor on one machine
 
-| Surface | Registration | SessionStart |
-|---------|--------------|--------------|
-| Cursor Agent | `~/.cursor/hooks.json` + `~/.cursor/hooks/` | User config only; remove from `settings.json` while using Cursor |
-| Claude Code | `~/.claude/settings.json` + `~/.claude/hooks/` | Include in `settings.json` |
+Because Cursor also loads `~/.claude/settings.json`, agent-do registration is **mutually exclusive** across Cursor's two config sources. Wrapper/adapter *files* may coexist on disk; dual *registration* is what double-fires. Practical rule:
+
+| Surface | Register agent-do in | Do not also register in |
+|---------|----------------------|-------------------------|
+| Cursor Agent | `~/.cursor/hooks.json` + `~/.cursor/hooks/` | `~/.claude/settings.json` — remove **all** agent-do entries there while using Cursor (not just SessionStart), or every event fires twice and Claude wrappers receive Cursor-schema payloads |
+| Claude Code (no Cursor) | `~/.claude/settings.json` + `~/.claude/hooks/` | n/a |
+| Both apps on one machine | Cursor: `~/.cursor/hooks.json` only; Claude Code: restore `settings.json` when you need Claude Code hooks | Leaving agent-do in `settings.json` while Cursor is open reintroduces the double-fire / startup-race traps above |
 
 ### Cursor troubleshooting
 
@@ -144,8 +147,8 @@ On Cursor restart, the hooks service loads Claude user config from `~/.claude/se
 |---------|--------------|-----|
 | Red banner: "Invalid hooks.json" / "Config version must be a number" | An unrelated plugin's hooks file lacks `"version": 1` | Fix or disable that plugin's hooks; the error blocks **all** hooks until resolved |
 | agent-do hooks listed but no nudges | Blocked by the global config error above | Resolve the unrelated plugin error first |
-| Every nudge appears twice | agent-do registered in both User config and Claude user config | Keep agent-do in `~/.cursor/hooks.json` only; remove the agent-do entries from `~/.claude/settings.json` while using Cursor |
-| `sessionStart` red X: `MainThreadShellExec not initialized` | `SessionStart` in `~/.claude/settings.json` fires before shell exec is ready | Remove `SessionStart` from `settings.json` while using Cursor |
+| Every nudge appears twice | agent-do registered in both User config and Claude user config | Keep agent-do in `~/.cursor/hooks.json` only; remove **all** agent-do entries from `~/.claude/settings.json` while using Cursor |
+| `sessionStart` red X: `MainThreadShellExec not initialized` | `SessionStart` in `~/.claude/settings.json` fires before shell exec is ready | Same fix as double-fire: remove agent-do from `settings.json` while using Cursor (SessionStart alone is not enough if other events are still dual-registered) |
 | Hook scripts not found | Wrong path in `hooks.json` | User hooks must use `./hooks/...` relative to `~/.cursor/` |
 
 The CLI alone (`agent-do` on PATH) works in Cursor terminals without any hooks; hooks add automatic nudges inside Agent sessions.
@@ -288,4 +291,4 @@ To block instead of nudge, edit `hooks/claude/agent-do-pretooluse-check.py` to e
 ./install.sh --uninstall
 ```
 
-Removes the symlink, breadcrumb, generated index (only when it carries the generator marker), and the agent-do hook wrappers from both `~/.claude/hooks/` and `~/.codex/hooks/`, touching nothing else in those directories. Hook entries in `~/.claude/settings.json` and `~/.codex/hooks.json` must be removed manually.
+Removes the symlink, breadcrumb, generated index (only when it carries the generator marker), the agent-do hook wrappers from both `~/.claude/hooks/` and `~/.codex/hooks/`, and Cursor adapters under `~/.cursor/hooks/` that carry the agent-do marker (same-named personal hooks are skipped with a warning). Hook entries in `~/.claude/settings.json`, `~/.codex/hooks.json`, and `~/.cursor/hooks.json` must be removed manually.

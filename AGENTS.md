@@ -23,7 +23,7 @@ Applies to `agent-do/`.
 
 - `assets/`: images and visual assets
 - `bin/`: core routing, discovery, and bootstrap scripts
-- `hooks/`: Claude Code integration hooks
+- `hooks/`: Claude Code, Codex, and Cursor integration hooks
 - `lib/`: shared library code (Python, Bash, Node.js)
 - `tests/`: test scripts
 - `tools/`: 95 tools (standalone scripts + directory-based tools)
@@ -36,7 +36,7 @@ Applies to `agent-do/`.
 - `CHANGELOG.md`: release history
 - `CLAUDE.md`: Claude Code project instructions
 - `CONTRIBUTING.md`: contribution guidelines
-- `docs/INTEGRATION.md`: Claude Code hook wiring
+- `docs/INTEGRATION.md`: Claude Code / Codex / Cursor hook wiring
 - `LICENSE`: MIT license
 - `README.md`: public-facing documentation
 - `SECURITY.md`: vulnerability reporting policy
