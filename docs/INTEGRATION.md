@@ -10,12 +10,14 @@ Everything below is presence-gated: repos without a `.manna/` board or a coord b
 ## Installation (install.sh)
 
 ```bash
-./install.sh                # Install; auto-installs Codex hooks if ~/.codex/ exists
-./install.sh --codex        # Force Codex hook install even without ~/.codex/
-./install.sh --no-codex     # Skip Codex install even when ~/.codex/ is present
-./install.sh --cursor       # Force Cursor adapter install even without ~/.cursor/
-./install.sh --no-cursor    # Skip Cursor install even when ~/.cursor/ is present
-./install.sh --uninstall    # Remove symlink, breadcrumb, generated index, hook wrappers, and owned Cursor adapters
+./install.sh                  # Install (asks before touching settings.json)
+./install.sh --register-hooks # Install and register hooks in settings.json without asking
+./install.sh --print-only     # Never modify settings.json; just print the snippet
+./install.sh --codex          # Force Codex hook install even without ~/.codex/
+./install.sh --no-codex       # Skip Codex install even when ~/.codex/ is present
+./install.sh --cursor         # Force Cursor adapter install even without ~/.cursor/
+./install.sh --no-cursor      # Skip Cursor install even when ~/.cursor/ is present
+./install.sh --uninstall      # Remove symlink, breadcrumb, generated index, hook wrappers, owned Cursor adapters, and the settings.json entries the installer added
 ```
 
 What the installer actually does, in order:
@@ -23,19 +25,21 @@ What the installer actually does, in order:
 1. Symlinks `agent-do` into `~/.local/bin` (warns if that directory is not on `PATH`)
 2. Writes the repo path to `~/.agent-do/install-path` (the breadcrumb wrappers and hooks resolve)
 3. Generates the discovery index from `registry.yaml` via `bin/gen-index`
-4. Writes four Claude hook **wrappers** to `~/.claude/hooks/`: `agent-do-session-start.sh`, `agent-do-prompt-router.py`, `agent-do-pretooluse-check.py`, `agent-do-coord-stop.sh`
+4. Writes seven Claude hook **wrappers** to `~/.claude/hooks/`: `agent-do-session-start.sh`, `agent-do-prompt-router.py`, `agent-do-correction-keys.py`, `agent-do-pretooluse-check.py`, `agent-do-coord-stop.sh`, `agent-do-zpc-write-nudge.sh`, `agent-do-zpc-position-nudge.sh`
 5. Optionally writes five Codex wrappers to `~/.codex/hooks/` (the three event hooks plus `stop-quality-gate.sh`/`.py`)
 5b. Optionally copies four Cursor adapters to `~/.cursor/hooks/` (auto-detected when `~/.cursor/` exists; see "Cursor registration" below)
 6. Installs Python dependencies (`pip3 install -r requirements.txt`)
 7. Interactively offers `npm install` for browse/unbrowse and `cargo build --release` for manna
 8. Runs `agent-do --health`
-9. Prints the Claude `settings.json` snippet, the Codex and Cursor `hooks.json` templates when those installs ran, and a project CLAUDE.md snippet
+9. Registers the hooks in Claude `settings.json` (asking first, unless `--register-hooks` or `--print-only` decided already), then prints the Codex and Cursor `hooks.json` templates when those installs ran, and a project CLAUDE.md snippet
 
-The installer never edits `settings.json` or `hooks.json` itself. Registration is manual, and required: **Claude Code does not auto-discover hooks**; a wrapper sitting in `~/.claude/hooks/` does nothing until it is registered.
+The Claude-side merge is idempotent and additive: it backs the file up to `settings.json.bak.<epoch>` before writing, adds only registrations that are missing, leaves your own hooks and every other settings key untouched, and makes no write at all on a second run. A piped or non-interactive run never modifies `settings.json` unless `--register-hooks` says so. The Codex and Cursor `hooks.json` files are never edited by the installer — that registration is manual. Registration (either way) is required: **no runtime auto-discovers hooks**; a wrapper sitting in `~/.claude/hooks/` does nothing until it is registered.
 
 ## Registering the Claude hooks (settings.json)
 
-Merge into `~/.claude/settings.json` (into the existing arrays if you already have hooks for these events):
+The registration set lives in one place — the `CLAUDE_SETTINGS_SPECS` array in install.sh. The merge, the printed snippet, and the uninstall sweep all read that array, so the three can never drift apart. It currently registers seven hooks across six events: `SessionStart` (session-start), `UserPromptSubmit` (prompt-router and correction-keys), `PreToolUse` matcher `Bash` (pretooluse-check), `SessionEnd` (coord-stop), `Stop` (zpc-write-nudge), and `PostToolUse` matcher `ExitPlanMode` (zpc-position-nudge).
+
+Run `./install.sh --register-hooks` to merge them, or `--print-only` to get the full snippet and merge by hand. Each entry has the shape:
 
 ```json
 {
@@ -51,50 +55,14 @@ Merge into `~/.claude/settings.json` (into the existing arrays if you already ha
           }
         ]
       }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/agent-do-prompt-router.py",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/agent-do-pretooluse-check.py",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/agent-do-coord-stop.sh",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }
 ```
 
-The snippet install.sh prints covers the first three events; the SessionEnd entry above completes the set (the installer writes the `agent-do-coord-stop.sh` wrapper either way). The timeouts are part of the design, not suggestions: SessionStart's subprocess calls are individually bounded (2-3s each) under a 10s registration, the prompt router works against a 4.2s internal safety line under its 5s registration, and SessionEnd budgets coord retirement (5s) plus the manna reconcile advisory (4s) inside its 10s.
+The timeouts the snippet carries are part of the design, not suggestions: SessionStart's subprocess calls are individually bounded (2-3s each) under a 10s registration, the prompt router works against a 4.2s internal safety line under its 5s registration, and SessionEnd budgets coord retirement (5s) plus the manna reconcile advisory (4s) inside its 10s.
 
-agent-do registers nothing at `Stop`. Claude Code fires `Stop` every turn; session retirement belongs on `SessionEnd`. Auto-commit, formatters, notifications, and other turn-end behavior are personal workflow for your own dotfiles.
+The `Stop` and `PostToolUse` registrations are deliberately narrow: the zpc write-nudge at `Stop` and the position nudge at `PostToolUse` matcher `ExitPlanMode` are bounded advisory nudges that never block a turn. Session retirement stays on `SessionEnd`. Auto-commit, formatters, notifications, and other turn-end behavior remain personal workflow for your own dotfiles.
 
 ## The wrapper upgrade model
 
@@ -120,6 +88,8 @@ Codex supports `hookSpecificOutput.additionalContext` on PreToolUse (May 2026 ho
 Cursor reads `~/.cursor/hooks.json` (`"version": 1` required; user hook commands run relative to `~/.cursor/`, so paths look like `./hooks/agent-do-session-start.py`). The adapters under `hooks/cursor/` translate Cursor's hook JSON into the canonical Claude hooks and translate responses back into Cursor's flat `additional_context` / `continue` / `permission` fields — install with `./install.sh --cursor` (auto-detected when `~/.cursor/` exists), then merge `hooks/cursor/hooks.json.example` into `~/.cursor/hooks.json` and restart Cursor (confirm under **Settings → Hooks → User config**).
 
 Cursor's **Agent** mode (formerly Composer) uses the same three events: a new Agent chat fires `sessionStart` (tooling reminder + project-scoped tools), each message fires `beforeSubmitPrompt` (prompt routing), and shell commands fire `preToolUse` matcher `Shell` (raw-CLI nudges). Tab inline completions use separate events (`beforeTabFileRead`, `afterTabFileEdit`); agent-do registers none.
+
+Because the adapters delegate to the canonical Claude hooks rather than porting them, canonical upgrades flow through to Cursor automatically — but only for events Cursor exposes. The canonical Claude set registers seven hooks across six events; Cursor 3.12 has no `Stop`, `SessionEnd`, or `PostToolUse` equivalents, so the zpc write-nudge, the zpc position nudge, and coord session retirement do not fire under Cursor (a Cursor session's coord presence ages out via liveness detection instead of retiring cleanly). The correction-keys hook is `UserPromptSubmit`-shaped and could be chained through `beforeSubmitPrompt`; it is not wired yet.
 
 The behaviors below are version-dependent observations, documented against Cursor 3.12 (July 2026) — re-check them after major Cursor updates.
 
