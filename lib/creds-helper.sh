@@ -177,8 +177,45 @@ creds_delete() {
     esac
 }
 
+# dump-keychain lists acct before svce in each genp record; split on
+# `keychain:` so a neighbor item's acct cannot leak. Attributes only (no -d).
+creds_parse_macos_keychain_accounts() {
+    local service="$1"
+    awk -v target="$service" '
+        /^keychain:/ { emit(); next }
+        /"acct"<blob>="/ {
+            line = $0
+            sub(/.*"acct"<blob>="/, "", line)
+            sub(/".*/, "", line)
+            acct = line
+            next
+        }
+        /"svce"<blob>="/ {
+            line = $0
+            sub(/.*"svce"<blob>="/, "", line)
+            sub(/".*/, "", line)
+            svce = line
+            next
+        }
+        END { emit() }
+        function emit() {
+            if (svce == target && acct != "") print acct
+            acct = ""
+            svce = ""
+        }
+    '
+}
+
 creds_list_store_macos() {
-    security dump-keychain 2>/dev/null | grep -A4 "\"svce\"<blob>=\"${AGENT_DO_CREDS_SERVICE}\"" | grep "\"acct\"" | sed 's/.*"\([^"]*\)".*/\1/' | sort -u
+    (
+        dump="$(mktemp "${TMPDIR:-/tmp}/agent-do-creds.XXXXXX")" || exit 1
+        trap 'rm -f "$dump"' EXIT
+        security dump-keychain >"$dump" || {
+            echo "Error: failed to enumerate macOS Keychain (security dump-keychain exited $?)" >&2
+            exit 1
+        }
+        creds_parse_macos_keychain_accounts "$AGENT_DO_CREDS_SERVICE" <"$dump" | sort -u
+    )
 }
 
 creds_list_store_linux() {
