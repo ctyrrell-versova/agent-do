@@ -208,7 +208,10 @@ creds_parse_macos_keychain_accounts() {
 
 creds_list_store_macos() {
     (
-        dump="$(mktemp "${TMPDIR:-/tmp}/agent-do-creds.XXXXXX")" || exit 1
+        dump="$(mktemp "${TMPDIR:-/tmp}/agent-do-creds.XXXXXX")" || {
+            echo "Error: mktemp failed while enumerating macOS Keychain" >&2
+            exit 1
+        }
         trap 'rm -f "$dump"' EXIT
         security dump-keychain >"$dump" || {
             echo "Error: failed to enumerate macOS Keychain (security dump-keychain exited $?)" >&2
@@ -220,11 +223,17 @@ creds_list_store_macos() {
 
 creds_list_store_linux() {
     if command -v secret-tool &>/dev/null; then
-        secret-tool search --all service "$AGENT_DO_CREDS_SERVICE" 2>/dev/null | grep "account" | sed 's/.*= //' | sort -u
+        # Zero matches makes grep exit 1 which, under pipefail, would turn an
+        # empty store into a silent failure; empty is a valid outcome.
+        secret-tool search --all service "$AGENT_DO_CREDS_SERVICE" 2>/dev/null | grep "account" | sed 's/.*= //' | sort -u || true
     fi
 }
 
 creds_list_store_windows() {
+    if ! command -v powershell.exe &>/dev/null; then
+        echo "Error: powershell.exe not found; cannot enumerate stored secrets" >&2
+        return 1
+    fi
     AGENT_DO_CREDS_WIN_SERVICE="$AGENT_DO_CREDS_SERVICE" \
     powershell.exe -NoProfile -NonInteractive -Command '
         $root = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) ("agent-do\\creds\\" + $env:AGENT_DO_CREDS_WIN_SERVICE)
@@ -238,7 +247,10 @@ creds_list_store() {
         macos) creds_list_store_macos ;;
         linux) creds_list_store_linux ;;
         windows) creds_list_store_windows ;;
-        *) return 1 ;;
+        *)
+            echo "Error: unsupported platform '$AGENT_DO_CREDS_PLATFORM' for creds list" >&2
+            return 1
+            ;;
     esac
 }
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -493,6 +494,50 @@ def main() -> int:
         require(
             "dump-keychain exited 45" in list_fail.stderr,
             f"expected dump-keychain failure on stderr: {list_fail.stderr!r}",
+        )
+
+    # Review 2026-08-31 (HIGH): an EMPTY linux store must be a valid outcome,
+    # not a silent exit 1 — under pipefail, grep's zero-match exit killed the
+    # pipeline before the fix.
+    with tempfile.TemporaryDirectory() as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+        empty_env = os.environ.copy()
+        empty_env.update(configure_fake_secret_tool(tmpdir))  # store starts empty
+
+        list_empty = run("./agent-do", "creds", "list", env=empty_env)
+        require(
+            list_empty.returncode == 0,
+            f"empty linux store must exit 0, got {list_empty.returncode}: {list_empty.stderr!r}",
+        )
+        require(
+            "No stored secrets." in list_empty.stdout,
+            f"empty linux store must report 'No stored secrets.': {list_empty.stdout!r}",
+        )
+
+    # Review 2026-08-31 (HIGH): an unsupported platform must refuse loudly.
+    unknown_env = os.environ.copy()
+    unknown_env["AGENT_DO_CREDS_PLATFORM"] = "unknown"
+    list_unknown = run("./agent-do", "creds", "list", env=unknown_env)
+    require(list_unknown.returncode != 0, "unknown platform must fail")
+    require(
+        "unsupported platform" in list_unknown.stderr,
+        f"unknown platform must explain itself on stderr: {list_unknown.stderr!r}",
+    )
+    require(
+        "No stored secrets." not in list_unknown.stdout,
+        f"unknown-platform failure must not look like an empty store: {list_unknown.stdout!r}",
+    )
+
+    # Review 2026-08-31: windows without powershell.exe must refuse loudly.
+    # Only meaningful where powershell.exe is genuinely absent (macOS/Linux CI).
+    if shutil.which("powershell.exe") is None:
+        win_env = os.environ.copy()
+        win_env["AGENT_DO_CREDS_PLATFORM"] = "windows"
+        list_win = run("./agent-do", "creds", "list", env=win_env)
+        require(list_win.returncode != 0, "windows without powershell must fail")
+        require(
+            "powershell.exe not found" in list_win.stderr,
+            f"missing powershell must explain itself on stderr: {list_win.stderr!r}",
         )
 
     print("credential tests passed")
