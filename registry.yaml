@@ -3917,7 +3917,7 @@ tools:
     - full decrypted disc backup (Blu-ray/DVD)
     - start a DLNA/UPnP streaming server
     - verify ripped .mkv outputs (files and sizes)
-    - report MakeMKV version and a drives+version snapshot
+    - report MakeMKV version, drive state, and registration
     - structured JSON output parsed from makemkvcon robot mode
     commands:
       drives: List optical drives and loaded discs

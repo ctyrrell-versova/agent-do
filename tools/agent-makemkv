@@ -19,11 +19,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [[ -f "$REPO_ROOT/lib/json-output.sh" ]]; then
     # shellcheck source=lib/json-output.sh
     source "$REPO_ROOT/lib/json-output.sh"
+else
+    echo "agent-makemkv: missing $REPO_ROOT/lib/json-output.sh" >&2
+    exit 1
 fi
 
 OUTPUT_FORMAT="${OUTPUT_FORMAT:-text}"
 DRY_RUN=false
-MINLENGTH=120   # ignore titles shorter than this many seconds (default MakeMKV skips clutter)
+# Empty means: do not pass --minlength to makemkvcon (honor the user's profile)
+# and do not apply a local duration filter.
+MINLENGTH=""
 
 show_help() {
     cat << 'EOF'
@@ -47,7 +52,7 @@ Disc argument:
 Options:
   --json                                 Structured JSON output
   --dry-run                              Print the makemkvcon command without running it
-  --minlength <sec>                      Minimum title length for info/rip (default: 120)
+  --minlength <sec>                      Minimum title length for info/rip (omit to use MakeMKV profile)
 
 Environment:
   AGENT_MAKEMKV_BIN                      Path to makemkvcon (else PATH, else MakeMKV.app)
@@ -108,16 +113,16 @@ mkvcon() {
 }
 
 # ---- Robot-output parser (shared by info/drives/snapshot/version) ----
-# Parses makemkvcon -r output into JSON. mode=$1, raw robot text=$2.
-# The raw text is passed via env (MKV_ROBOT_RAW) because the heredoc below
-# occupies stdin.
+# Reads a temp-file dump (never the environment: a Blu-ray info scan can
+# exceed ARG_MAX). mode=$1, dump path=$2.
 parse_robot() {
-    local mode="$1" raw="$2"
-    MKV_ROBOT_RAW="$raw" python3 - "$mode" "$MINLENGTH" <<'PY'
-import sys, os, json, csv, io
+    local mode="$1" dump="$2"
+    python3 - "$mode" "${MINLENGTH:-0}" "$dump" <<'PY'
+import sys, json, csv, io
 
 mode = sys.argv[1]
-minlen = int(sys.argv[2])
+minlen_s = sys.argv[2]
+minlen = int(minlen_s) if minlen_s.isdigit() else 0
 
 # MakeMKV attribute ids we surface with friendly names (apdefs.h). Unknown ids
 # are still kept, keyed by their numeric id, so nothing is silently dropped.
@@ -129,11 +134,28 @@ ATTR = {
     30: "tree_info", 31: "panel_title", 32: "volume_name", 33: "order_weight",
 }
 
+# apdefs.h AP_DriveState. Official usage.txt calls field 2 "visible", but the
+# live robot line carries these state codes. 256/257 are slot placeholders,
+# not drives; 0 is an empty closed tray and must stay visible.
+DRIVE_STATE = {
+    0: "empty_closed",
+    1: "empty_open",
+    2: "inserted",
+    3: "loading",
+    256: "no_drive",
+    257: "unmounting",
+}
+ABSENT_STATES = {256, 257}
+# PROT_DEMO_KEY_EXPIRED / APP_INIT_FAILED
+FATAL_MSG = {"5021", "5009"}
+
 def fields(rest):
     # makemkvcon uses CSV with quoted strings that may contain commas.
     return next(csv.reader(io.StringIO(rest)))
 
 drives, titles, disc, version = [], {}, {}, None
+registration = {"state": "unknown", "detail": None}
+fatals = []
 
 def attr_key(code):
     try:
@@ -142,7 +164,20 @@ def attr_key(code):
         return str(code)
     return ATTR.get(code, f"attr_{code}")
 
-for line in os.environ.get("MKV_ROBOT_RAW", "").splitlines():
+def classify_registration(code, message):
+    text = (message or "").lower()
+    if code == "5021" or "expired" in text:
+        return "expired"
+    if "registered" in text:
+        return "registered"
+    if "evaluation" in text or "eval period" in text or "trial" in text:
+        return "evaluation"
+    return None
+
+with open(sys.argv[3], encoding="utf-8", errors="replace") as fh:
+    raw = fh.read()
+
+for line in raw.splitlines():
     line = line.rstrip("\n")
     if ":" not in line:
         continue
@@ -155,18 +190,37 @@ for line in os.environ.get("MKV_ROBOT_RAW", "").splitlines():
         # MSG:code,flags,count,message,format,param0,...  The version banner's
         # last parameter is the clean version ("MakeMKV v1.17.7 ..."); the
         # message field (f[3]) has a trailing " started".
-        if version is None and len(f) >= 4 and "MakeMKV" in f[3]:
-            version = f[-1] if "MakeMKV" in f[-1] else f[3]
+        code = f[0] if f else ""
+        message = f[3] if len(f) >= 4 else ""
+        if version is None and "MakeMKV" in message:
+            version = f[-1] if "MakeMKV" in f[-1] else message
+        kind = classify_registration(code, message)
+        if kind:
+            # expired outranks evaluation outranks registered
+            rank = {"unknown": 0, "registered": 1, "evaluation": 2, "expired": 3}
+            if rank[kind] >= rank[registration["state"]]:
+                registration = {"state": kind, "detail": message or None}
+        if code in FATAL_MSG:
+            fatals.append(message or f"makemkvcon message {code}")
     elif tag == "DRV":
-        # DRV:index,visible,enabled,flags,drivename,discname,device
-        if len(f) >= 7 and f[1] not in ("0", "256"):  # visible drive present
-            drives.append({
-                "index": int(f[0]) if f[0].isdigit() else f[0],
-                "drive": f[4],
-                "disc": f[5],
-                "device": f[6],
-                "loaded": bool(f[5]),
-            })
+        # DRV:index,state,enabled,flags,drivename,discname,device
+        if len(f) < 7:
+            continue
+        try:
+            state = int(f[1])
+        except ValueError:
+            continue
+        if state in ABSENT_STATES:
+            continue
+        drives.append({
+            "index": int(f[0]) if f[0].isdigit() else f[0],
+            "state": state,
+            "state_name": DRIVE_STATE.get(state, f"state_{state}"),
+            "drive": f[4],
+            "disc": f[5],
+            "device": f[6],
+            "loaded": bool(f[5]),
+        })
     elif tag == "CINFO":
         # CINFO:id,code,value
         if len(f) >= 3:
@@ -178,15 +232,26 @@ for line in os.environ.get("MKV_ROBOT_RAW", "").splitlines():
             t["attrs"][attr_key(f[1])] = f[3]
     # SINFO (per-stream) is intentionally not expanded to keep output compact.
 
+if fatals and not drives and not titles and version is None:
+    print(json.dumps({"error": fatals[0]}))
+    sys.exit(0)
+
 if mode == "drives":
     print(json.dumps({"drives": drives}, indent=2))
 elif mode == "version":
     print(json.dumps({"version": version}, indent=2))
-else:  # info / snapshot title scan
+elif mode == "snapshot":
+    print(json.dumps({
+        "version": version,
+        "drives": drives,
+        "registration": registration,
+    }, indent=2))
+else:  # info / title scan
     out = []
     for idx in sorted(titles):
         a = titles[idx]["attrs"]
-        # Filter sub-minlength titles when duration is known (HH:MM:SS).
+        # Filter sub-minlength titles when the caller set --minlength and
+        # duration is known (HH:MM:SS). minlen 0 means "do not filter".
         dur = a.get("duration", "")
         secs = None
         if dur and dur.count(":") == 2:
@@ -195,7 +260,7 @@ else:  # info / snapshot title scan
                 secs = int(hh) * 3600 + int(mm) * 60 + int(ss)
             except ValueError:
                 secs = None
-        if secs is not None and secs < minlen:
+        if minlen and secs is not None and secs < minlen:
             continue
         out.append({
             "index": idx,
@@ -211,63 +276,118 @@ else:  # info / snapshot title scan
 PY
 }
 
+# Enumerate complete (non-empty) .mkv files. Zero-byte leftovers from an
+# interrupted rip are listed with complete=false and excluded from count.
+list_mkvs() {
+    local outdir="$1"
+    python3 - "$outdir" <<'PY'
+import sys, os, json
+outdir = sys.argv[1]
+files = []
+for name in sorted(os.listdir(outdir)):
+    if name.lower().endswith(".mkv"):
+        p = os.path.join(outdir, name)
+        sz = os.path.getsize(p)
+        files.append({"file": name, "path": p, "size_bytes": sz,
+                      "size_mb": round(sz / 1048576, 1),
+                      "complete": sz > 0})
+complete = [f for f in files if f["complete"]]
+print(json.dumps({
+    "outdir": outdir,
+    "count": len(complete),
+    "incomplete": len(files) - len(complete),
+    "files": files,
+}))
+PY
+}
+
 cmd_drives() {
     local disc
     disc="$(normalize_disc "disc:9999")"  # out-of-range: enumerate then exit fast
-    local raw
     if $DRY_RUN; then
         mkvcon -r --cache=1 info "$disc"; return 0
     fi
-    raw="$(mkvcon -r --cache=1 info "$disc" 2>/dev/null || true)"
-    local parsed
-    parsed="$(parse_robot drives "$raw")"
+    local tmp rc=0 parsed
+    tmp="$(mktemp)"
+    mkvcon -r --cache=1 info "$disc" > "$tmp" || rc=$?
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        die "makemkvcon produced no output (exit $rc); check registration and drives"
+    fi
+    parsed="$(parse_robot drives "$tmp")"
+    rm -f "$tmp"
+    if [[ "$parsed" == *'"error"'* ]]; then
+        die "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("error","makemkvcon failed"))' "$parsed")"
+    fi
     render_json_or_table "$parsed" drives
 }
 
 cmd_info() {
     local disc; disc="$(normalize_disc "${1:-disc:0}")"
+    local extra=()
+    [[ -n "$MINLENGTH" ]] && extra+=("--minlength=$MINLENGTH")
     if $DRY_RUN; then
-        mkvcon -r "--minlength=$MINLENGTH" info "$disc"; return 0
+        mkvcon -r "${extra[@]}" info "$disc"; return 0
     fi
-    local raw
-    raw="$(mkvcon -r "--minlength=$MINLENGTH" info "$disc" 2>/dev/null || true)"
-    [[ -z "$raw" ]] && die "No output from makemkvcon; is a disc loaded in $disc?"
-    local parsed
-    parsed="$(parse_robot info "$raw")"
+    local tmp rc=0 parsed
+    tmp="$(mktemp)"
+    mkvcon -r "${extra[@]}" info "$disc" > "$tmp" || rc=$?
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        die "No output from makemkvcon (exit $rc); is a disc loaded in $disc?"
+    fi
+    parsed="$(parse_robot info "$tmp")"
+    rm -f "$tmp"
     render_json_or_table "$parsed" info
 }
 
 cmd_rip() {
     local disc title outdir
-    disc="$(normalize_disc "${1:?disc required}")"
-    title="${2:?title index or 'all' required}"
-    outdir="${3:?output directory required}"
-    mkdir -p "$outdir"
+    [[ -n "${1:-}" ]] || die "rip: disc required" 2
+    [[ -n "${2:-}" ]] || die "rip: title index or 'all' required" 2
+    [[ -n "${3:-}" ]] || die "rip: output directory required" 2
+    disc="$(normalize_disc "$1")"
+    title="$2"
+    outdir="$3"
+    local extra=()
+    [[ -n "$MINLENGTH" ]] && extra+=("--minlength=$MINLENGTH")
     if $DRY_RUN; then
-        mkvcon -r --progress=-same "--minlength=$MINLENGTH" mkv "$disc" "$title" "$outdir"
+        mkvcon -r --progress=-same "${extra[@]}" mkv "$disc" "$title" "$outdir"
         return 0
     fi
-    if mkvcon -r --progress=-same "--minlength=$MINLENGTH" mkv "$disc" "$title" "$outdir"; then
-        # Verify: report what landed in outdir.
-        cmd_verify "$outdir"
-    else
+    mkdir -p "$outdir"
+    # Robot chatter (MSG/PRGV) must not precede the JSON document on stdout.
+    if ! mkvcon -r --progress=-same "${extra[@]}" mkv "$disc" "$title" "$outdir" 1>&2; then
         die "makemkvcon rip failed for $disc title $title"
+    fi
+    local parsed count
+    parsed="$(list_mkvs "$outdir")"
+    count="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["count"])' "$parsed")"
+    [[ "$count" -gt 0 ]] || die "rip produced no .mkv files in $outdir"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_result "$parsed"
+    else
+        cmd_verify "$outdir"
     fi
 }
 
 cmd_backup() {
     local disc outdir
-    disc="$(normalize_disc "${1:?disc required}")"
-    outdir="${2:?output directory required}"
-    mkdir -p "$outdir"
+    [[ -n "${1:-}" ]] || die "backup: disc required" 2
+    [[ -n "${2:-}" ]] || die "backup: output directory required" 2
+    disc="$(normalize_disc "$1")"
+    outdir="$2"
     if $DRY_RUN; then
         mkvcon -r --progress=-same --decrypt backup "$disc" "$outdir"; return 0
     fi
-    if mkvcon -r --progress=-same --decrypt backup "$disc" "$outdir"; then
-        json_success "Backup complete: $outdir"
-    else
+    mkdir -p "$outdir"
+    if ! mkvcon -r --progress=-same --decrypt backup "$disc" "$outdir" 1>&2; then
         die "makemkvcon backup failed for $disc"
     fi
+    if [[ -z "$(ls -A "$outdir" 2>/dev/null)" ]]; then
+        die "backup produced no files in $outdir"
+    fi
+    json_success "Backup complete: $outdir"
 }
 
 cmd_stream() {
@@ -280,62 +400,58 @@ cmd_version() {
     if $DRY_RUN; then
         mkvcon -r --cache=1 info "disc:9999"; return 0
     fi
-    local raw parsed
-    raw="$(mkvcon -r --cache=1 info "disc:9999" 2>/dev/null || true)"
-    parsed="$(parse_robot version "$raw")"
+    local tmp rc=0 parsed
+    tmp="$(mktemp)"
+    mkvcon -r --cache=1 info "disc:9999" > "$tmp" || rc=$?
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        die "makemkvcon produced no output (exit $rc)"
+    fi
+    parsed="$(parse_robot version "$tmp")"
+    rm -f "$tmp"
     render_json_or_table "$parsed" version
 }
 
 cmd_verify() {
-    local outdir="${1:?output directory required}"
+    local outdir="${1:-}"
+    [[ -n "$outdir" ]] || die "verify: output directory required" 2
     [[ -d "$outdir" ]] || die "Not a directory: $outdir"
-    python3 - "$outdir" "$OUTPUT_FORMAT" <<'PY'
-import sys, os, json
-outdir, fmt = sys.argv[1], sys.argv[2]
-files = []
-for name in sorted(os.listdir(outdir)):
-    if name.lower().endswith(".mkv"):
-        p = os.path.join(outdir, name)
-        sz = os.path.getsize(p)
-        files.append({"file": name, "path": p, "size_bytes": sz,
-                      "size_mb": round(sz / 1048576, 1)})
-result = {"outdir": outdir, "count": len(files), "files": files}
-if fmt == "json":
-    print(json.dumps({"success": True, "result": result}, indent=2))
+    local parsed
+    parsed="$(list_mkvs "$outdir")"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_result "$parsed"
+        return 0
+    fi
+    python3 - "$parsed" <<'PY'
+import sys, json
+result = json.loads(sys.argv[1])
+files = result["files"]
+complete = [f for f in files if f.get("complete", True)]
+if not complete:
+    print(f"No .mkv files in {result['outdir']}")
 else:
-    if not files:
-        print(f"No .mkv files in {outdir}")
-    else:
-        for f in files:
-            print(f"{f['size_mb']:>9.1f} MB  {f['file']}")
-        print(f"\n{len(files)} file(s), {round(sum(x['size_bytes'] for x in files)/1048576,1)} MB total")
+    for f in complete:
+        print(f"{f['size_mb']:>9.1f} MB  {f['file']}")
+    print(f"\n{len(complete)} file(s), {round(sum(x['size_bytes'] for x in complete)/1048576,1)} MB total")
+    if result.get("incomplete"):
+        print(f"{result['incomplete']} incomplete (zero-byte) leftover(s) ignored")
 PY
 }
 
 cmd_snapshot() {
-    # Compose snapshot from a single robot dump (drives + version).
-    local dump
-    dump="$(mkvcon -r --cache=1 info "disc:9999" 2>/dev/null || true)"
-    local drives_json version_json
-    drives_json="$(parse_robot drives "$dump")"
-    version_json="$(parse_robot version "$dump")"
-    python3 - "$OUTPUT_FORMAT" "$drives_json" "$version_json" <<'PY'
-import sys, json
-fmt, dj, vj = sys.argv[1], sys.argv[2], sys.argv[3]
-snap = {
-    "version": json.loads(vj).get("version"),
-    "drives": json.loads(dj).get("drives", []),
-}
-if fmt == "json":
-    print(json.dumps({"success": True, "result": snap}, indent=2))
-else:
-    print(f"MakeMKV: {snap['version'] or 'unknown'}")
-    if not snap["drives"]:
-        print("No optical drives detected.")
-    for d in snap["drives"]:
-        state = f"disc: {d['disc']}" if d["loaded"] else "empty"
-        print(f"  [{d['index']}] {d['drive']}  ({state})  {d['device']}")
-PY
+    if $DRY_RUN; then
+        mkvcon -r --cache=1 info "disc:9999"; return 0
+    fi
+    local tmp rc=0 parsed
+    tmp="$(mktemp)"
+    mkvcon -r --cache=1 info "disc:9999" > "$tmp" || rc=$?
+    if [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        die "makemkvcon produced no output (exit $rc); check registration and drives"
+    fi
+    parsed="$(parse_robot snapshot "$tmp")"
+    rm -f "$tmp"
+    render_json_or_table "$parsed" snapshot
 }
 
 # Render a parsed-JSON blob either as JSON or a compact human table.
@@ -345,19 +461,33 @@ render_json_or_table() {
         json_result "$parsed"
         return 0
     fi
-    MKV_PARSED="$parsed" python3 - "$kind" <<'PY'
-import sys, os, json
+    local tmp; tmp="$(mktemp)"
+    printf '%s' "$parsed" > "$tmp"
+    python3 - "$kind" "$tmp" <<'PY'
+import sys, json
 kind = sys.argv[1]
-data = json.loads(os.environ["MKV_PARSED"])
+with open(sys.argv[2], encoding="utf-8") as f:
+    data = json.load(f)
 if kind == "drives":
     ds = data.get("drives", [])
     if not ds:
         print("No optical drives detected.")
     for d in ds:
-        state = f"disc: {d['disc']}" if d["loaded"] else "empty"
+        state = f"disc: {d['disc']}" if d["loaded"] else d.get("state_name", "empty")
         print(f"[{d['index']}] {d['drive']}  ({state})  {d['device']}")
 elif kind == "version":
     print(data.get("version") or "unknown")
+elif kind == "snapshot":
+    print(f"MakeMKV: {data.get('version') or 'unknown'}")
+    reg = data.get("registration") or {}
+    detail = f" ({reg['detail']})" if reg.get("detail") else ""
+    print(f"Registration: {reg.get('state', 'unknown')}{detail}")
+    ds = data.get("drives", [])
+    if not ds:
+        print("No optical drives detected.")
+    for d in ds:
+        state = f"disc: {d['disc']}" if d["loaded"] else d.get("state_name", "empty")
+        print(f"  [{d['index']}] {d['drive']}  ({state})  {d['device']}")
 else:
     disc = data.get("disc", {})
     label = disc.get("name") or disc.get("volume_name") or "(unknown disc)"
@@ -370,6 +500,7 @@ else:
         print(f"  #{t['index']:>2}  {t['duration'] or '--:--:--'}  "
               f"{(t['chapters'] or '?')+'ch':>5}  {t['size'] or '?':>9}  {name}")
 PY
+    rm -f "$tmp"
 }
 
 # ---- Argument parsing (global flags may appear anywhere) ----
@@ -378,13 +509,18 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --json) OUTPUT_FORMAT="json"; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
-        --minlength) MINLENGTH="${2:?}"; shift 2 ;;
+        --minlength)
+            [[ $# -ge 2 ]] || die "--minlength requires a number" 2
+            MINLENGTH="$2"; shift 2 ;;
         --minlength=*) MINLENGTH="${1#*=}"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) ARGS+=("$1"); shift ;;
     esac
 done
 set -- "${ARGS[@]:-}"
+if [[ -n "$MINLENGTH" && ! "$MINLENGTH" =~ ^[0-9]+$ ]]; then
+    die "--minlength requires a number" 2
+fi
 
 cmd="${1:-}"
 [[ $# -gt 0 ]] && shift || true
