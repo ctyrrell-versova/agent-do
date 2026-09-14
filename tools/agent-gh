@@ -2218,6 +2218,52 @@ def cmd_edit(args: argparse.Namespace) -> None:
     print(f"Edited {ref.repo}#{ref.number}")
 
 
+def cmd_create(args: argparse.Namespace) -> None:
+    """Open a pull request. Never interactive: title and body are required so gh
+    cannot fall into its editor prompt inside an agent session."""
+    if not args.title:
+        raise GhError("create requires --title")
+    if not args.body and not args.body_file:
+        raise GhError("create requires --body or --body-file (use --body-file - for stdin)")
+    if args.body and args.body_file:
+        raise GhError("create takes --body or --body-file, not both")
+    gh_args = ["pr", "create", "--title", args.title]
+    if args.repo:
+        gh_args.extend(["--repo", args.repo])
+    if args.base:
+        gh_args.extend(["--base", args.base])
+    if args.head:
+        gh_args.extend(["--head", args.head])
+    if args.body:
+        gh_args.extend(["--body", args.body])
+    if args.body_file:
+        gh_args.extend(["--body-file", args.body_file])
+    if args.draft:
+        gh_args.append("--draft")
+    append_repeated_flag(gh_args, "--reviewer", args.reviewer)
+    append_repeated_flag(gh_args, "--label", args.label)
+    append_repeated_flag(gh_args, "--assignee", args.assignee)
+    input_text = sys.stdin.read() if args.body_file == "-" else None
+    url = run_gh(gh_args, input_text=input_text).strip().splitlines()[-1].strip()
+    if not url.startswith("https://"):
+        raise GhError(f"gh pr create did not return a PR URL: {url!r}")
+    payload = gh_json(["pr", "view", url, "--json", "number,url,title,state,isDraft,headRefName,baseRefName"])
+    result = {
+        "ok": True,
+        "url": payload.get("url", url),
+        "number": payload.get("number"),
+        "title": payload.get("title"),
+        "state": payload.get("state"),
+        "draft": bool(payload.get("isDraft")),
+        "head": payload.get("headRefName"),
+        "base": payload.get("baseRefName"),
+    }
+    if args.json:
+        print_json(result)
+        return
+    print(f"Created {result['url']}  (#{result['number']}, {result['head']} -> {result['base']}{', draft' if result['draft'] else ''})")
+
+
 def cmd_update_branch(args: argparse.Namespace) -> None:
     ref = parse_pr_ref(args.pr)
     gh_args = ["pr", "update-branch", *pr_gh_args(ref)]
@@ -2385,6 +2431,20 @@ def build_parser() -> argparse.ArgumentParser:
     checkout.add_argument("--recurse-submodules", action="store_true")
     checkout.set_defaults(func=cmd_checkout)
 
+    create = sub.add_parser("create", help="Open a pull request (non-interactive; --title and --body/--body-file required)")
+    create.add_argument("--repo", help="owner/repo to open the PR in (default: current repo)")
+    create.add_argument("--base", help="Branch to merge into")
+    create.add_argument("--head", help="Branch with the changes, e.g. fork-owner:branch (default: current branch)")
+    create.add_argument("--title")
+    create.add_argument("--body")
+    create.add_argument("--body-file", help="Read body from file; - for stdin")
+    create.add_argument("--draft", action="store_true")
+    create.add_argument("--reviewer", action="append")
+    create.add_argument("--label", action="append")
+    create.add_argument("--assignee", action="append")
+    create.add_argument("--json", action="store_true")
+    create.set_defaults(func=cmd_create)
+
     edit = sub.add_parser("edit", help="Edit pull request metadata")
     edit.add_argument("pr")
     edit.add_argument("--title")
@@ -2444,6 +2504,7 @@ Commands:
   close <pr> [--delete-branch]   Close a PR
   reopen <pr>                    Reopen a PR
   checkout <pr>                  Check out a PR locally
+  create --title t --body-file f Open a PR (--repo, --base, --head, --draft, --json)
   edit <pr>                      Edit PR title/body/base/labels/reviewers
   update-branch <pr>             Update a PR branch from base
   ready <pr>                     Mark a PR ready for review

@@ -3153,6 +3153,7 @@ tools:
       close: Close a PR
       reopen: Reopen a PR
       checkout: Check out a PR locally
+      create: Open a PR (non-interactive; title + body required)
       edit: Edit PR metadata
       update-branch: Update a PR branch from its base branch
       merge: Merge a PR (gated on checks, threads, merge state, approval; --force to bypass)
@@ -3167,6 +3168,8 @@ tools:
       command: agent-gh awaiting --owner Versova-Intelligence-Division --author ctyrrell-versova --audit --replies --probe-deploys
     - intent: list open PRs across my repos
       command: agent-gh prs --state open
+    - intent: open a pull request for this branch
+      command: 'agent-gh create --base main --title "fix(tool): summary" --body-file pr.md --json'
     - intent: audit a pull request and generate a request-changes reply
       command: agent-gh audit ovachiever/agent-do#3 --reply --probe-deploys
     - intent: review pull request 3 in agent-do
@@ -3236,6 +3239,7 @@ tools:
       - close
       - reopen
       - checkout
+      - create
       - edit
       - update-branch
       - merge
