@@ -58,7 +58,7 @@ verify beats are read-only; connect, interact, and save verbs write.
 | [excel](#excel) | AI-first Excel CLI for workbook automation | mixed | 11 |
 | [figma](#figma) | Control Figma | read | 3 |
 | [gcp](#gcp) | Google Cloud Platform management — REST API for projects, APIs, secrets, service accounts + Console automation for OAuth credentials | mixed | 19 |
-| [gh](#gh) | GitHub repository, pull request, review, and merge work-state across accessible repos | mixed | 24 |
+| [gh](#gh) | GitHub repository, pull request, review, and merge work-state across accessible repos | mixed | 25 |
 | [ghidra](#ghidra) | Ghidra reverse engineering automation | read | 4 |
 | [git](#git) | Guarded local Git operations for staged commits, worktrees, snapshots, conflicts, and recovery | mixed | 19 |
 | [handbrake](#handbrake) | Convert ripped video (MKV) to Plex-ready MP4 via HandBrakeCLI — probe a file's titles and streams, list encode presets, transcode single files or whole directories with skip/overwrite handling, and verify .mp4 outputs | mixed | 7 |
@@ -1904,6 +1904,7 @@ Concurrency: `mixed`
 - `close`: Close a PR
 - `reopen`: Reopen a PR
 - `checkout`: Check out a PR locally
+- `create`: Open a PR (non-interactive; title + body required)
 - `edit`: Edit PR metadata
 - `update-branch`: Update a PR branch from its base branch
 - `merge`: Merge a PR (gated on checks, threads, merge state, approval; --force to bypass)
@@ -1921,6 +1922,8 @@ agent-do gh awaiting --owner Versova-Intelligence-Division --author ctyrrell-ver
 agent-do gh awaiting --owner Versova-Intelligence-Division --author ctyrrell-versova --audit --replies --probe-deploys
 # list open PRs across my repos
 agent-do gh prs --state open
+# open a pull request for this branch
+agent-do gh create --base main --title "fix(tool): summary" --body-file pr.md --json
 # audit a pull request and generate a request-changes reply
 agent-do gh audit ovachiever/agent-do#3 --reply --probe-deploys
 # review pull request 3 in agent-do
@@ -1940,7 +1943,7 @@ agent-do gh edit ovachiever/agent-do#5 --add-reviewer @me --add-label review-nee
 **Safety (from contracts)**
 
 - Read-only (snapshot/verify; safe to parallelize): `audit`, `awaiting`, `checks`, `diff`, `doctrine`, `inbox`, `portfolio list`, `pr`, `prs`, `repos`, `review`, `threads`, `whoami`
-- Write (connect/interact/save): `approve`, `checkout`, `close`, `comment`, `draft`, `edit`, `merge`, `portfolio add`, `portfolio remove`, `ready`, `reopen`, `request-changes`, `update-branch`
+- Write (connect/interact/save): `approve`, `checkout`, `close`, `comment`, `create`, `draft`, `edit`, `merge`, `portfolio add`, `portfolio remove`, `ready`, `reopen`, `request-changes`, `update-branch`
 - own_state (writes only its own cache/state; parallel-safe): `portfolio add`, `portfolio remove`
 
 ### ghidra
