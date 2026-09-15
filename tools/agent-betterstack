@@ -347,12 +347,12 @@ cmd_heartbeats() {
     if $_json_mode; then
         if $reveal; then _emit_json "$result"; return; fi
         printf '%s' "$result" | python3 -c '
-import sys, json, re
+import sys, json
 d = json.load(sys.stdin)
 for item in d.get("data", []) if isinstance(d, dict) else []:
     a = item.get("attributes", {})
-    if isinstance(a.get("url"), str):
-        a["url"] = re.sub(r"(/heartbeat/)[^/?#]+", r"\1<redacted>", a["url"])
+    if isinstance(a, dict) and "url" in a:
+        a["url"] = "<redacted>"
 print(json.dumps(d, indent=2))
 '
         return
