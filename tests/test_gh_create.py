@@ -49,11 +49,17 @@ def main() -> int:
             return subprocess.run([str(ROOT / "tools" / "agent-gh"), "create", *args], env=env, text=True,
                                   capture_output=True, input=stdin, check=False)
 
-        # guards: never fall into gh's interactive prompt
-        r = run("--body", "b")
+        # guards: never fall into gh's editor, push, or fork prompts
+        r = run("--head", "feat/x", "--body", "b")
         require(r.returncode != 0 and "requires --title" in r.stderr, f"missing title not refused: {r.stderr}")
-        r = run("--title", "T")
+        r = run("--head", "feat/x", "--title", "T")
         require(r.returncode != 0 and "requires --body" in r.stderr, f"missing body not refused: {r.stderr}")
+        r = run("--title", "T", "--body", "b")
+        require(r.returncode != 0 and "--head" in r.stderr and "required" in r.stderr,
+                f"missing head not refused: {r.stderr}")
+        r = run("--head", "", "--title", "T", "--body", "b")
+        require(r.returncode != 0 and "requires --head" in r.stderr,
+                f"empty head not refused: {r.stderr}")
         require(not log.exists(), "gh must not be invoked when arguments are incomplete")
 
         # happy path with --json and stdin body
@@ -75,7 +81,7 @@ def main() -> int:
 
         # text path
         log.unlink()
-        r = run("--title", "T", "--body", "b", "--draft")
+        r = run("--head", "feat/x", "--title", "T", "--body", "b", "--draft")
         require(r.returncode == 0, f"text create failed: {r.stderr}")
         require("Created https://github.com/o/r/pull/42  (#42, feat/x -> main)" in r.stdout, f"text output: {r.stdout}")
         require("--draft" in json.loads(log.read_text().splitlines()[0])["argv"], "--draft not forwarded")

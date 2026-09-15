@@ -2219,8 +2219,10 @@ def cmd_edit(args: argparse.Namespace) -> None:
 
 
 def cmd_create(args: argparse.Namespace) -> None:
-    """Open a pull request. Never interactive: title and body are required so gh
-    cannot fall into its editor prompt inside an agent session."""
+    """Open a pull request. Never interactive: an explicit head, title, and body
+    are required so gh cannot prompt to push/fork or open an editor."""
+    if not args.head:
+        raise GhError("create requires --head to prevent gh from prompting to push or fork")
     if not args.title:
         raise GhError("create requires --title")
     if not args.body and not args.body_file:
@@ -2232,8 +2234,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         gh_args.extend(["--repo", args.repo])
     if args.base:
         gh_args.extend(["--base", args.base])
-    if args.head:
-        gh_args.extend(["--head", args.head])
+    gh_args.extend(["--head", args.head])
     if args.body:
         gh_args.extend(["--body", args.body])
     if args.body_file:
@@ -2431,10 +2432,17 @@ def build_parser() -> argparse.ArgumentParser:
     checkout.add_argument("--recurse-submodules", action="store_true")
     checkout.set_defaults(func=cmd_checkout)
 
-    create = sub.add_parser("create", help="Open a pull request (non-interactive; --title and --body/--body-file required)")
+    create = sub.add_parser(
+        "create",
+        help="Open a pull request (non-interactive; --head, --title, and --body/--body-file required)",
+    )
     create.add_argument("--repo", help="owner/repo to open the PR in (default: current repo)")
     create.add_argument("--base", help="Branch to merge into")
-    create.add_argument("--head", help="Branch with the changes, e.g. fork-owner:branch (default: current branch)")
+    create.add_argument(
+        "--head",
+        required=True,
+        help="Branch with the changes, e.g. fork-owner:branch (required to prevent gh from prompting to push or fork)",
+    )
     create.add_argument("--title")
     create.add_argument("--body")
     create.add_argument("--body-file", help="Read body from file; - for stdin")
@@ -2504,7 +2512,8 @@ Commands:
   close <pr> [--delete-branch]   Close a PR
   reopen <pr>                    Reopen a PR
   checkout <pr>                  Check out a PR locally
-  create --title t --body-file f Open a PR (--repo, --base, --head, --draft, --json)
+  create --head h --title t --body-file f
+                                 Open a PR (--repo, --base, --draft, --json)
   edit <pr>                      Edit PR title/body/base/labels/reviewers
   update-branch <pr>             Update a PR branch from base
   ready <pr>                     Mark a PR ready for review

@@ -1904,7 +1904,7 @@ Concurrency: `mixed`
 - `close`: Close a PR
 - `reopen`: Reopen a PR
 - `checkout`: Check out a PR locally
-- `create`: Open a PR (non-interactive; title + body required)
+- `create`: Open a PR (non-interactive; explicit --head + title + body required)
 - `edit`: Edit PR metadata
 - `update-branch`: Update a PR branch from its base branch
 - `merge`: Merge a PR (gated on checks, threads, merge state, approval; --force to bypass)
@@ -1923,7 +1923,7 @@ agent-do gh awaiting --owner Versova-Intelligence-Division --author ctyrrell-ver
 # list open PRs across my repos
 agent-do gh prs --state open
 # open a pull request for this branch
-agent-do gh create --base main --title "fix(tool): summary" --body-file pr.md --json
+agent-do gh create --base main --head fix/tool-summary --title "fix(tool): summary" --body-file pr.md --json
 # audit a pull request and generate a request-changes reply
 agent-do gh audit ovachiever/agent-do#3 --reply --probe-deploys
 # review pull request 3 in agent-do
