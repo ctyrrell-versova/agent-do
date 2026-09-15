@@ -4,13 +4,13 @@ manna: mn-4e2ef2
 track: mn-455a88
 source: Diary/_global/2026-09-15.md
 base_commit: 1a7b146dddcb7e4ae6f826829883f260ab8ed038
-scope: 'Repair generated tools reference drift in PR #42'
+scope: 'Repair PR #42 docs and non-interactive head contract'
 inputs:
 - Diary/_global/2026-09-15.md
-binding: sha256:cc277261c00737eb5f9182456d550a48e4c63fc8baa96a7075d5442aaa82aa2f
+binding: sha256:df1dac3895d0843d61276f4ab6d4bb25989286287bc51bb4cff6dc3d99790788
 ---
 
-# Handoff: Repair generated tools reference drift in PR #42
+# Handoff: Repair PR #42 docs and non-interactive head contract
 
 Board state is canonical in `.manna/`. This file is the work order for one item only.
 
@@ -22,7 +22,7 @@ agent-do manna claim mn-4e2ef2
 
 ## Scope
 
-Repair generated tools reference drift in PR #42
+Repair PR #42 docs and non-interactive head contract
 
 ## Inputs
 
@@ -30,7 +30,7 @@ Repair generated tools reference drift in PR #42
 
 ## Work order
 
-Regenerate docs/TOOLS.md with the canonical generator, verify the exact diff, and make one additive corrective push.
+Regenerate `docs/TOOLS.md` with the canonical generator. Require explicit `--head` so GitHub CLI 2.75.1 cannot prompt to push or fork before pull-request creation. Preserve `--body-file -` standard-input forwarding. Then verify exact net scope, hosted checks, review threads, and the independent audit.
 
 ## Completion
 
