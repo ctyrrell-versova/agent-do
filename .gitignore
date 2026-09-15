@@ -10,6 +10,7 @@ venv/
 target/
 *.o
 *.dylib
+tools/agent-dpt/dist/
 
 # Private/local
 .private/

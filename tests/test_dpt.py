@@ -150,6 +150,19 @@ def test_false_positive_guards_are_structural() -> None:
     require("--for-file" in hook, "DPT hook can score without proving project-page association")
 
 
+def test_generated_dist_is_ignored() -> None:
+    result = run(
+        "git",
+        "check-ignore",
+        "--quiet",
+        "tools/agent-dpt/dist/dpt-engine.js",
+    )
+    require(
+        result.returncode == 0,
+        "tools/agent-dpt/dist/ must remain ignored and contain no tracked engine",
+    )
+
+
 def test_generated_engine_is_current() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         copied = Path(tmp) / "agent-dpt"
@@ -193,6 +206,7 @@ def main() -> int:
     test_session_scoped_baselines()
     test_installed_hook_is_thin_wrapper()
     test_false_positive_guards_are_structural()
+    test_generated_dist_is_ignored()
     test_generated_engine_is_current()
     test_rule_count_claims()
     print("dpt offline tests passed")
