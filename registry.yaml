@@ -6439,6 +6439,7 @@ tools:
       - resolve
       attributes:
         ack: [composite]
+        heartbeats: [sensitive]
         pause: [composite]
         resolve: [composite]
         resume: [composite]

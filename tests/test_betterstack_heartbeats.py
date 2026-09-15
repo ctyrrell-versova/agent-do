@@ -6,6 +6,7 @@ column the list endpoint never populates."""
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -31,7 +32,21 @@ bs_get() {{ printf '%s' '{PAYLOAD}'; }}
     return subprocess.run(["bash", "-c", script], cwd=ROOT, text=True, capture_output=True, check=False)
 
 
+def test_heartbeats_contract_is_sensitive() -> None:
+    sys.path.insert(0, str(ROOT / "lib"))
+    from registry import _load_yaml_data, get_tool_contract_attributes
+
+    registry = _load_yaml_data(ROOT / "registry.yaml")
+    attributes = get_tool_contract_attributes(registry["tools"]["betterstack"])
+    require(
+        "sensitive" in attributes.get("heartbeats", []),
+        "heartbeats must remain sensitive because --json --reveal emits its write credential",
+    )
+
+
 def main() -> int:
+    test_heartbeats_contract_is_sensitive()
+
     r = run("cmd_heartbeats --json")
     require(r.returncode == 0, f"heartbeats --json failed: {r.stderr}")
     require("AbCdEf123456SecretToken" not in r.stdout, f"ping token leaked in --json: {r.stdout}")
