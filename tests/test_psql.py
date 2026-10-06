@@ -1470,7 +1470,7 @@ mask_connection_string "postgresql://myuser:supersecret@db.render.com:5432/mydb"
     # commands would silently run against the old database.
     def seed_previous_session(tmpdir: str) -> Path:
         session = Path(tmpdir) / ".agent-do" / "psql" / "session.json"
-        session.parent.mkdir(parents=True)
+        session.parent.mkdir(parents=True, exist_ok=True)
         session.write_text(json.dumps({
             "host": "previous.invalid", "port": "5432",
             "database": "previous_db", "user": "u", "sslmode": "prefer",
@@ -1510,6 +1510,40 @@ mask_connection_string "postgresql://myuser:supersecret@db.render.com:5432/mydb"
 
     check("failed connect (unknown profile) ends the previous session",
           test_failed_connect_unknown_profile_ends_previous_session)
+
+    def test_failed_connect_no_args_ends_previous_session():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"HOME": tmpdir}
+            for k in ["PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPORT"]:
+                env.pop(k, None)
+            session = seed_previous_session(tmpdir)
+            r = run_tool("connect", env_override={**env, "PGHOST": "", "PGDATABASE": ""})
+            require(r.returncode != 0, "connect with no target should fail")
+            require(json.loads(r.stdout)["ok"] is False, f"should report failure: {r.stdout}")
+            require(not session.exists(), "session file survived a connect with no target")
+            require_disconnected(env)
+
+    check("failed connect (no target) ends the previous session",
+          test_failed_connect_no_args_ends_previous_session)
+
+    def test_failed_connect_saved_profile_unreachable_ends_previous_session():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"HOME": tmpdir}
+            # Passwordless profile: exercises the profile path without Keychain.
+            r = run_tool("profile", "add", "unreachable",
+                         "postgresql://u@nonexistent.invalid:5432/db",
+                         env_override=env)
+            require(r.returncode == 0 and json.loads(r.stdout)["ok"] is True,
+                    f"profile add failed: {r.stdout} {r.stderr}")
+            session = seed_previous_session(tmpdir)
+            r = run_tool("connect", "--profile", "unreachable", env_override=env)
+            require(r.returncode != 0, "connect to an unreachable profile should fail")
+            require(json.loads(r.stdout)["ok"] is False, f"should report failure: {r.stdout}")
+            require(not session.exists(), "session file survived a failed saved-profile connect")
+            require_disconnected(env)
+
+    check("failed connect (saved profile, unreachable) ends the previous session",
+          test_failed_connect_saved_profile_unreachable_ends_previous_session)
 
     def test_connect_help_keeps_session():
         with tempfile.TemporaryDirectory() as tmpdir:
