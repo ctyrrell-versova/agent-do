@@ -3779,7 +3779,7 @@ Concurrency: `mixed`
 - list alert rules across all projects
 - list recent releases
 - full account snapshot as JSON
-- {'cron monitor health': 'status, last and next check-in per environment'}
+- cron monitor health (status, last and next check-in per environment)
 
 **Commands**
 
