@@ -45,7 +45,7 @@ CRON
   cron cancel <cron>            Cancel running cron
 
 ENV VARS / SECRET FILES
-  env <svc>                     List env vars (values masked)
+  env <svc> [--reveal]          List env vars (every value masked unless --reveal; --json honoured)
   env-set <svc> <KEY> <VAL>     Upsert env var
   env-del <svc> <KEY>           Delete env var
   secret {list|get|set|del} <svc> [name] [file|-]   Per-service secret files
@@ -767,9 +767,24 @@ cmd_scale() {
 }
 
 cmd_env() {
-    local name_or_id="${1:-}"
+    _render_parse_reveal "$@"
+    local name_or_id=""
+    local a
+    for a in ${_render_rest[@]+"${_render_rest[@]}"}; do
+        if [[ "$a" == -* ]]; then
+            echo "Error: unknown option '$a'" >&2
+            echo "Usage: agent-render env <service> [--json] [--reveal]" >&2
+            return 2
+        fi
+        if [[ -n "$name_or_id" ]]; then
+            echo "Error: unexpected argument '$a'" >&2
+            echo "Usage: agent-render env <service> [--json] [--reveal]" >&2
+            return 2
+        fi
+        name_or_id="$a"
+    done
     if [[ -z "$name_or_id" ]]; then
-        echo "Usage: agent-render env <service>"
+        echo "Usage: agent-render env <service> [--json] [--reveal]"
         return 1
     fi
 
@@ -780,22 +795,35 @@ cmd_env() {
     local result
     result=$(render_request GET "/services/$sid/env-vars?limit=100")
 
-    echo "$result" | python3 -c "
-import sys, json
+    # Values are masked in full by default: Render does not say which vars are
+    # secrets, so neither length nor a prefix can be shown safely. --reveal
+    # prints values; --json emits {key, value, generateValue} under the same rule
+    # and never passes the raw API body through.
+    echo "$result" | RENDER_REVEAL="${RENDER_REVEAL:-0}" RENDER_JSON="${RENDER_JSON:-0}" python3 -c "
+import json, os, sys
 items = json.load(sys.stdin)
-if not items:
+reveal = os.environ['RENDER_REVEAL'] == '1'
+rows = []
+for item in items or []:
+    ev = item.get('envVar', item)
+    val = ev.get('value') or ''
+    rows.append({
+        'key': ev.get('key', ''),
+        'value': (val if reveal else '***') if val else '',
+        'generateValue': bool(ev.get('generateValue')),
+    })
+if os.environ['RENDER_JSON'] == '1':
+    print(json.dumps(rows, indent=2))
+    sys.exit(0)
+if not rows:
     print('No env vars')
     sys.exit(0)
-for item in items:
-    ev = item.get('envVar', item)
-    key = ev.get('key', '')
-    val = ev.get('value', '')
-    if val:
-        # Mask values longer than 8 chars
-        display = val[:4] + '****' if len(val) > 8 else val
+for row in rows:
+    if row['value']:
+        display = row['value']
     else:
-        display = '(generateValue)' if ev.get('generateValue') else '(empty)'
-    print(f'{key}={display}')
+        display = '(generateValue)' if row['generateValue'] else '(empty)'
+    print(f\"{row['key']}={display}\")
 "
 }
 
