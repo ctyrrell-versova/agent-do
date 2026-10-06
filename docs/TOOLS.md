@@ -58,7 +58,7 @@ verify beats are read-only; connect, interact, and save verbs write.
 | [excel](#excel) | AI-first Excel CLI for workbook automation | mixed | 11 |
 | [figma](#figma) | Control Figma | read | 3 |
 | [gcp](#gcp) | Google Cloud Platform management — REST API for projects, APIs, secrets, service accounts + Console automation for OAuth credentials | mixed | 19 |
-| [gh](#gh) | GitHub repository, pull request, review, and merge work-state across accessible repos | mixed | 24 |
+| [gh](#gh) | GitHub repository, pull request, review, and merge work-state across accessible repos | mixed | 25 |
 | [ghidra](#ghidra) | Ghidra reverse engineering automation | read | 4 |
 | [git](#git) | Guarded local Git operations for staged commits, worktrees, snapshots, conflicts, and recovery | mixed | 19 |
 | [handbrake](#handbrake) | Convert ripped video (MKV) to Plex-ready MP4 via HandBrakeCLI — probe a file's titles and streams, list encode presets, transcode single files or whole directories with skip/overwrite handling, and verify .mp4 outputs | mixed | 7 |
@@ -1887,6 +1887,7 @@ Concurrency: `mixed`
 
 - `whoami`: Show authenticated GitHub user
 - `repos`: List or sync accessible repositories
+- `alerts`: Dependabot alert census per repository or org — open count, severity and scope; repos with alerts turned off are reported as off, never counted as 0
 - `inbox`: Show actionable PR work across repositories — maintainer-role and declared-portfolio sweeps of open third-party PRs plus review-request ceremony (--ceremony-only skips the sweeps)
 - `portfolio`: Manage the declared portfolio of swept repos — add/remove owner/repo or owner/* patterns, list current declarations
 - `awaiting`: Show open PRs likely awaiting your review by broad review heuristics
@@ -1939,7 +1940,7 @@ agent-do gh edit ovachiever/agent-do#5 --add-reviewer @me --add-label review-nee
 
 **Safety (from contracts)**
 
-- Read-only (snapshot/verify; safe to parallelize): `audit`, `awaiting`, `checks`, `diff`, `doctrine`, `inbox`, `portfolio list`, `pr`, `prs`, `repos`, `review`, `threads`, `whoami`
+- Read-only (snapshot/verify; safe to parallelize): `alerts`, `audit`, `awaiting`, `checks`, `diff`, `doctrine`, `inbox`, `portfolio list`, `pr`, `prs`, `repos`, `review`, `threads`, `whoami`
 - Write (connect/interact/save): `approve`, `checkout`, `close`, `comment`, `draft`, `edit`, `merge`, `portfolio add`, `portfolio remove`, `ready`, `reopen`, `request-changes`, `update-branch`
 - own_state (writes only its own cache/state; parallel-safe): `portfolio add`, `portfolio remove`
 
