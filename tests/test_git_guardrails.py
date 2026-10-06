@@ -284,6 +284,38 @@ def test_sweep(root: Path, env: dict[str, str]) -> None:
         require(git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0, f"sweep deleted protected {branch}")
 
 
+
+def test_sweep_keeps_long_lived_branches(root: Path, env: dict[str, str]) -> None:
+    """A fully pushed integration branch that main contains is 'merged' by ancestry,
+    but it is a base branch, not finished work: sweep must never offer it."""
+    remote = root / "remote-long-lived.git"
+    git(root, "init", "-q", "--bare", str(remote))
+    repo = init_repo(root, "sweep-long-lived")
+    git(repo, "remote", "add", "origin", str(remote))
+    git(repo, "push", "-qu", "origin", "main")
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+    built_in = ("staging", "develop", "development", "production", "trunk")
+    configured = ("qa", "release/2026.10")
+    for branch in (*built_in, *configured, "feature-done"):
+        git(repo, "branch", branch)
+        git(repo, "push", "-qu", "-u", "origin", branch)
+    git(repo, "config", "--add", "agent-do.sweep.protect", "qa")
+    git(repo, "config", "--add", "agent-do.sweep.protect", "release/*")
+
+    dry = json_payload(agent(repo, "sweep", "--json", env=env))
+    require(dry["candidates"] == ["feature-done"], f"sweep offered a long-lived branch: {dry}")
+    reasons = {item["branch"]: item["reason"] for item in dry["excluded"]}
+    for branch in (*built_in, *configured):
+        require(reasons.get(branch) == "protected", f"{branch} not protected: {dry}")
+
+    applied = json_payload(agent(repo, "sweep", "--apply", "--json", env=env))
+    require(applied["deleted"] == ["feature-done"], f"sweep deleted wrong branches: {applied}")
+    for branch in (*built_in, *configured):
+        require(git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0,
+                f"sweep deleted long-lived {branch}")
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp_str:
         root = Path(tmp_str)
@@ -295,6 +327,7 @@ def main() -> None:
         test_recover_read_only(root, env)
         test_recover_outside_repo(root, env)
         test_sweep(root, env)
+        test_sweep_keeps_long_lived_branches(root, env)
 
     print("git guardrail tests passed")
 
