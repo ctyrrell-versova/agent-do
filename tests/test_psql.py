@@ -1549,6 +1549,8 @@ elif "all_null" in sql:
     sys.stdout.write("x\n" + (null + "\n") * 3)
 elif "empty_text" in sql:
     sys.stdout.write("e\n" + "\n" * 3)
+elif "multiline" in sql:
+    sys.stdout.write('m,n\n"line one\nline two",' + null + '\n')
 elif "series" in sql:
     m = re.search(r"LIMIT (\d+)\s*$", sql)
     total = int(re.search(r"series_(\d+)", sql).group(1))
@@ -1614,6 +1616,14 @@ else:
             require(data["row_count"] == 3 and data["rows"] == [[""]] * 3, f"blank rows dropped: {data}")
 
     check("query: trailing single-column empty-text rows are kept", test_query_trailing_empty_text_rows_kept)
+
+    def test_query_multiline_value_is_one_cell():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = last_json(run_tool("query", "select multiline", env_override=fake_env(tmpdir)).stdout)
+            require(data.get("rows") == [["line one\nline two", None]] and data.get("row_count") == 1,
+                    f"quoted multi-line value split or mis-parsed: {data}")
+
+    check("query: a quoted multi-line value stays one cell", test_query_multiline_value_is_one_cell)
 
     def test_query_truncation_reported():
         with tempfile.TemporaryDirectory() as tmpdir:
