@@ -1665,6 +1665,50 @@ else:
 
     check("dump/restore: failures return ok:false with the tool's message, exit 7", test_dump_and_restore_errors_surface)
 
+    # ---- One JSON document per call (no separate request header) ----
+    def single_doc(stdout: str) -> dict:
+        try:
+            data = json.loads(stdout)
+        except ValueError as exc:
+            raise AssertionError(f"stdout is not exactly one JSON document ({exc}): {stdout!r}")
+        require(isinstance(data, dict), f"expected one JSON object: {stdout!r}")
+        return data
+
+    def test_query_is_one_document():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = fake_env(tmpdir)
+            ok = single_doc(run_tool("query", "select null_vs_empty", env_override=env).stdout)
+            require(ok.get("ok") is True and ok.get("database") == "fakedb" and ok.get("sql") == "select null_vs_empty",
+                    f"query result must name the database and the SQL as given: {ok}")
+            err = single_doc(run_tool("query", "select no_such_col from t", env_override=env).stdout)
+            require(err.get("ok") is False and err.get("database") == "fakedb" and err.get("sql") == "select no_such_col from t",
+                    f"query error must name the database and the SQL as given: {err}")
+
+    check("query: stdout is one JSON document naming database and sql", test_query_is_one_document)
+
+    def test_exec_is_one_document():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = fake_env(tmpdir)
+            good = Path(tmpdir) / "good.sql"
+            good.write_text("select 1;\n")
+            bad = Path(tmpdir) / "bad.sql"
+            bad.write_text("DO $$ BEGIN RAISE EXCEPTION 'x'; END $$;\n")
+            for f, expect_ok in ((good, True), (bad, False)):
+                data = single_doc(run_tool("exec", str(f), env_override=env).stdout)
+                require(data.get("ok") is expect_ok and data.get("database") == "fakedb" and data.get("file") == str(f),
+                        f"exec result must name the database and file: {data}")
+
+    check("exec: stdout is one JSON document naming database and file", test_exec_is_one_document)
+
+    def test_connect_is_one_document():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = fake_env(tmpdir)
+            r = run_tool("connect", "postgresql://u@fake.invalid:5432/conndb", env_override=env)
+            data = single_doc(r.stdout)
+            require(data.get("ok") is True and data.get("database") == "conndb", f"connect result: {data}")
+
+    check("connect: stdout is one JSON document", test_connect_is_one_document)
+
     # ---- Summary ----
     print(f"\npsql tests: {failures} failures")
     return 1 if failures else 0

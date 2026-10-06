@@ -485,17 +485,8 @@ print(json.dumps({'ok': False, 'error': 'Connection failed: ' + sys.argv[1]}))
         masked="postgresql://${_PG_USER}:@${_PG_HOST}:${_PG_PORT}/${_PG_DATABASE}"
     fi
 
-    # Snapshot the connection event
-    if type snapshot_begin &>/dev/null; then
-        snapshot_begin "psql-connect"
-        snapshot_field "host" "$_PG_HOST"
-        snapshot_field "port" "$_PG_PORT"
-        snapshot_field "database" "$_PG_DATABASE"
-        snapshot_field "user" "$_PG_USER"
-        snapshot_field "sslmode" "$_PG_SSLMODE"
-        snapshot_field "masked_uri" "$masked"
-        snapshot_end
-    fi
+    # One JSON document per call: the result below already carries host, port,
+    # database, user, sslmode and the masked URI, so no separate header is printed.
 
     python3 -c "
 import json, sys
@@ -1074,13 +1065,9 @@ cmd_query() {
         return 1
     fi
 
-    # Snapshot the query
-    if type snapshot_begin &>/dev/null; then
-        snapshot_begin "psql-query"
-        snapshot_field "database" "$_PG_DATABASE"
-        snapshot_field "sql" "$sql"
-        snapshot_end
-    fi
+    # One JSON document per call: the result carries the database and the SQL
+    # as given (before any EXPLAIN or added LIMIT) instead of a separate header.
+    local requested_sql="$sql"
 
     # Add EXPLAIN ANALYZE if requested
     if [[ "$explain" == "true" ]]; then
@@ -1137,9 +1124,11 @@ import json, sys
 print(json.dumps({
     'ok': False,
     'error': sys.argv[1].strip(),
-    'exit_code': 4
+    'exit_code': 4,
+    'database': sys.argv[2],
+    'sql': sys.argv[3]
 }, indent=2))
-" "$result"
+" "$result" "$_PG_DATABASE" "$requested_sql"
         return 4
     fi
 
@@ -1151,8 +1140,10 @@ raw = sys.stdin.read()
 elapsed = int(sys.argv[1])
 null_token = sys.argv[2]
 applied_limit = int(sys.argv[3]) if sys.argv[3] else None
+database, requested_sql = sys.argv[4], sys.argv[5]
 if not raw.strip():
-    print(json.dumps({'ok': True, 'columns': [], 'rows': [], 'row_count': 0,
+    print(json.dumps({'ok': True, 'database': database, 'sql': requested_sql,
+                      'columns': [], 'rows': [], 'row_count': 0,
                       'truncated': False, 'limit': applied_limit,
                       'execution_time_ms': elapsed}, indent=2))
     sys.exit(0)
@@ -1168,6 +1159,8 @@ if truncated:
     rows_out = rows_out[:applied_limit]
 print(json.dumps({
     'ok': True,
+    'database': database,
+    'sql': requested_sql,
     'columns': columns,
     'rows': rows_out,
     'row_count': len(rows_out),
@@ -1175,7 +1168,7 @@ print(json.dumps({
     'limit': applied_limit,
     'execution_time_ms': elapsed
 }, indent=2))
-" "$elapsed" "$null_token" "$applied_limit"
+" "$elapsed" "$null_token" "$applied_limit" "$_PG_DATABASE" "$requested_sql"
 }
 
 cmd_sample() {
@@ -1291,13 +1284,8 @@ cmd_exec() {
         exit 6
     fi
 
-    # Snapshot the file execution
-    if type snapshot_begin &>/dev/null; then
-        snapshot_begin "psql-exec"
-        snapshot_field "database" "$_PG_DATABASE"
-        snapshot_field "file" "$file"
-        snapshot_end
-    fi
+    # One JSON document per call: the result carries the database and file
+    # instead of a separate header.
 
     local start_ms
     start_ms=$(python3 -c "import time; print(int(time.time()*1000))")
@@ -1318,6 +1306,7 @@ ok = int(sys.argv[1]) == 0
 output = sys.stdin.read().strip()
 data = {
     'ok': ok,
+    'database': sys.argv[4],
     'file': sys.argv[2],
     'execution_time_ms': int(sys.argv[3]),
     'output': output[:2000] if output else ''
@@ -1326,7 +1315,7 @@ if not ok:
     data['error'] = output[:500]
     data['exit_code'] = 4
 print(json.dumps(data, indent=2))
-" "$exit_code" "$file" "$elapsed" <<< "$result"
+" "$exit_code" "$file" "$elapsed" "$_PG_DATABASE" <<< "$result"
     [[ $exit_code -eq 0 ]] || return 4
 }
 
