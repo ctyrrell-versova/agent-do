@@ -1555,6 +1555,85 @@ mask_connection_string "postgresql://myuser:supersecret@db.render.com:5432/mydb"
 
     check("connect --help leaves the session alone", test_connect_help_keeps_session)
 
+    # ---- Never wait on a password prompt; bounded connect time ----
+    RECORDER = r"""#!/bin/sh
+{ printf '%s' "$(basename "$0")"; for a in "$@"; do printf ' [%s]' "$a"; done
+  printf ' PGCONNECT_TIMEOUT=%s\n' "${PGCONNECT_TIMEOUT-unset}"; } >> "$CALL_LOG"
+case "$(basename "$0")" in
+  psql)
+    case " $* " in
+      *" -f "*) echo "DO" ;;
+      *"SELECT version()"*) echo "PostgreSQL 16.0 (fake)" ;;
+      *) printf '?column?\n1\n' ;;
+    esac ;;
+esac
+exit 0
+"""
+
+    def recorder_env(tmpdir: str, with_psql: bool = True) -> tuple[dict, Path]:
+        bin_dir = Path(tmpdir) / "recbin"
+        bin_dir.mkdir()
+        names = ("psql", "pg_dump", "pg_restore") if with_psql else ()
+        for name in names:
+            exe = bin_dir / name
+            exe.write_text(RECORDER)
+            exe.chmod(0o755)
+        log = Path(tmpdir) / "calls.log"
+        log.touch()
+        path = f"{bin_dir}:{os.environ['PATH']}" if with_psql else f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin"
+        env = {"HOME": tmpdir, "PATH": path, "PGPASSWORD": "x", "CALL_LOG": str(log)}
+        env.pop("PGCONNECT_TIMEOUT", None)
+        return env, log
+
+    def seed_fake_session(tmpdir: str) -> None:
+        session = Path(tmpdir) / ".agent-do" / "psql" / "session.json"
+        session.parent.mkdir(parents=True, exist_ok=True)
+        session.write_text(json.dumps({"host": "fake.invalid", "port": "5432", "database": "fakedb",
+                                       "user": "u", "sslmode": "prefer"}))
+
+    def test_every_client_call_never_prompts():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env, log = recorder_env(tmpdir)
+            run_tool("connect", "postgresql://u:p@fake.invalid:5432/db", env_override={**env, "PGCONNECT_TIMEOUT": ""})
+            seed_fake_session(tmpdir)
+            sql = Path(tmpdir) / "x.sql"
+            sql.write_text("select 1;\n")
+            run_tool("query", "select 1", env_override=env)
+            run_tool("exec", str(sql), env_override=env)
+            run_tool("dump", str(Path(tmpdir) / "out.sql"), env_override=env)
+            dumpfile = Path(tmpdir) / "in.dump"
+            dumpfile.write_bytes(b"PGDMP")
+            run_tool("restore", str(dumpfile), env_override=env)
+            calls = [line for line in log.read_text().splitlines() if line.strip()]
+            for tool in ("psql", "pg_dump", "pg_restore"):
+                require(any(c.startswith(tool + " ") for c in calls), f"{tool} never called: {calls}")
+            missing = [c for c in calls if " [-w] " not in c + " "]
+            require(not missing, f"client call without -w (could wait on a password prompt): {missing}")
+
+    check("every psql/pg_dump/pg_restore call carries -w (never prompt)", test_every_client_call_never_prompts)
+
+    def test_connect_timeout_default_and_override():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env, log = recorder_env(tmpdir)
+            seed_fake_session(tmpdir)
+            run_tool("query", "select 1", env_override=env)
+            require("PGCONNECT_TIMEOUT=10" in log.read_text(), f"default connect timeout not applied: {log.read_text()}")
+            log.write_text("")
+            run_tool("query", "select 1", env_override={**env, "PGCONNECT_TIMEOUT": "3"})
+            require("PGCONNECT_TIMEOUT=3" in log.read_text(), f"caller's connect timeout overridden: {log.read_text()}")
+
+    check("connect timeout defaults to 10s; a caller's value wins", test_connect_timeout_default_and_override)
+
+    def test_missing_psql_still_reported():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env, _ = recorder_env(tmpdir, with_psql=False)
+            seed_fake_session(tmpdir)
+            r = run_tool("query", "select 1", env_override=env)
+            require(r.returncode == 2, f"missing psql should exit 2, got {r.returncode}: {r.stdout} {r.stderr}")
+            require("psql binary not found" in r.stdout, f"missing psql not reported: {r.stdout}")
+
+    check("missing psql binary is still reported (exit 2)", test_missing_psql_still_reported)
+
     # ---- Unknown Command ----
     def test_unknown_command():
         r = run_tool("bogus_command_xyz")
