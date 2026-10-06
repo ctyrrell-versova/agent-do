@@ -98,7 +98,7 @@ verify beats are read-only; connect, interact, and save verbs write.
 | [repl](#repl) | Control interactive REPLs (Python, Node, psql, etc.) | mixed | 5 |
 | [resend](#resend) | Resend domain management and DNS verification — exact records, verification state, and public DNS checks | mixed | 7 |
 | [screen](#screen) | Vision-based screen perception and control (macOS) | mixed | 9 |
-| [sentry](#sentry) | Sentry error tracking, issue management, alerts, and releases | mixed | 12 |
+| [sentry](#sentry) | Sentry error tracking, issue management, alerts, and releases | mixed | 13 |
 | [serial](#serial) | Serial port communication | mixed | 3 |
 | [sessions](#sessions) | Search and retrieve AI coding session history | read | 9 |
 | [sheets](#sheets) | Control Google Sheets | mixed | 3 |
@@ -3779,6 +3779,7 @@ Concurrency: `mixed`
 - list alert rules across all projects
 - list recent releases
 - full account snapshot as JSON
+- {'cron monitor health': 'status, last and next check-in per environment'}
 
 **Commands**
 
@@ -3794,6 +3795,7 @@ Concurrency: `mixed`
 - `alert`: Detailed alert rule info
 - `releases`: List recent releases (--project)
 - `snapshot`: Full account state as JSON
+- `monitors`: Cron monitors with status, last/next check-in per environment (--project, --environment)
 
 **Examples**
 
@@ -3812,6 +3814,8 @@ agent-do sentry resolve VERSOVA-CHAT-B
 agent-do sentry alerts
 # get sentry account snapshot
 agent-do sentry snapshot
+# check sentry cron monitor health
+agent-do sentry monitors
 ```
 
 **Credentials**
@@ -3820,7 +3824,7 @@ agent-do sentry snapshot
 
 **Safety (from contracts)**
 
-- Read-only (snapshot/verify; safe to parallelize): `alert`, `alerts`, `issue`, `issues`, `project`, `projects`, `releases`, `snapshot`
+- Read-only (snapshot/verify; safe to parallelize): `alert`, `alerts`, `issue`, `issues`, `monitors`, `project`, `projects`, `releases`, `snapshot`
 - Write (connect/interact/save): `assign`, `ignore`, `resolve`, `unresolve`
 - composite (one call performs several beats internally): `assign`, `ignore`, `resolve`, `unresolve`
 
