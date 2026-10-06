@@ -1891,7 +1891,7 @@ Concurrency: `mixed`
 - `portfolio`: Manage the declared portfolio of swept repos — add/remove owner/repo or owner/* patterns, list current declarations
 - `awaiting`: Show open PRs likely awaiting your review by broad review heuristics
 - `prs`: Search pull requests
-- `pr`: Show PR details
+- `pr`: Show PR details; includes the description (body) and merged_at/merged_by/closed_at/merge_commit
 - `diff`: Show PR diff
 - `threads`: Show unresolved PR review threads
 - `checks`: Show PR checks
