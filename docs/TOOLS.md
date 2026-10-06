@@ -2013,7 +2013,7 @@ Concurrency: `mixed`
 - `snap restore`: Recover a file to .recovered, or overwrite only with --in-place
 - `conflicts`: List unmerged files with conflict-marker counts
 - `recover`: Read-only reflog and unreachable-commit report
-- `sweep`: Preview safe local branch deletion; mutate only with --apply; never offers long-lived branches (main, master, staging, develop, development, production, trunk, remote default) or names/globs in git config agent-do.sweep.protect
+- `sweep`: Preview safe local branch deletion; mutate only with --apply; never offers main, master, staging, develop, development, production, trunk, the remote default, or names/globs in git config agent-do.sweep.protect
 
 **Examples**
 
