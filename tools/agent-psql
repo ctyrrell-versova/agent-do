@@ -26,6 +26,8 @@ Paste a Render or Supabase connection string and go.
 CONNECTION
   connect <conn_string>      Connect via connection string
   connect --profile <name>   Connect via saved profile
+                             (any connect attempt ends the current session first;
+                             a failed connect leaves you disconnected)
   disconnect                 End session
   status                     Show connection status
 
@@ -400,6 +402,13 @@ cmd_connect() {
             *) conn_string="$1"; shift ;;
         esac
     done
+
+    # Fail closed: a connect attempt ends the previous session before anything
+    # can fail. Otherwise a failed connect (unknown profile, missing credential,
+    # unreachable host, rejected password) leaves later commands silently
+    # running against the previously connected database. A successful connect
+    # writes a fresh session below.
+    rm -f "$SESSION_FILE"
 
     # From profile
     if [[ -n "$profile_name" ]]; then

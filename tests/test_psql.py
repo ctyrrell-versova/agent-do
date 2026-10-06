@@ -1466,6 +1466,61 @@ mask_connection_string "postgresql://myuser:supersecret@db.render.com:5432/mydb"
 
     check("connect to bad host fails cleanly", test_connect_bad_host)
 
+    # A failed connect must not leave the previous session active: later
+    # commands would silently run against the old database.
+    def seed_previous_session(tmpdir: str) -> Path:
+        session = Path(tmpdir) / ".agent-do" / "psql" / "session.json"
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({
+            "host": "previous.invalid", "port": "5432",
+            "database": "previous_db", "user": "u", "sslmode": "prefer",
+        }))
+        return session
+
+    def require_disconnected(env: dict) -> None:
+        r = run_tool("status", env_override=env)
+        data = json.loads(r.stdout)
+        require(data.get("connected") is False,
+                f"previous session still active after failed connect: {data}")
+
+    def test_failed_connect_bad_host_ends_previous_session():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"HOME": tmpdir}
+            session = seed_previous_session(tmpdir)
+            r = run_tool("connect",
+                         "postgresql://u:p@nonexistent.invalid:5432/db",
+                         env_override=env)
+            require(r.returncode != 0, "connect to nonexistent host should fail")
+            require(json.loads(r.stdout)["ok"] is False, f"should report failure: {r.stdout}")
+            require(not session.exists(), "session file survived a failed connect")
+            require_disconnected(env)
+
+    check("failed connect (bad host) ends the previous session",
+          test_failed_connect_bad_host_ends_previous_session)
+
+    def test_failed_connect_unknown_profile_ends_previous_session():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"HOME": tmpdir}
+            session = seed_previous_session(tmpdir)
+            r = run_tool("connect", "--profile", "no-such-profile", env_override=env)
+            require(r.returncode != 0, "connect with an unknown profile should fail")
+            require(json.loads(r.stdout)["ok"] is False, f"should report failure: {r.stdout}")
+            require(not session.exists(), "session file survived a failed profile connect")
+            require_disconnected(env)
+
+    check("failed connect (unknown profile) ends the previous session",
+          test_failed_connect_unknown_profile_ends_previous_session)
+
+    def test_connect_help_keeps_session():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"HOME": tmpdir}
+            session = seed_previous_session(tmpdir)
+            r = run_tool("connect", "--help", env_override=env)
+            require(r.returncode == 0, f"connect --help failed: {r.stderr}")
+            require(session.exists(), "connect --help must not end the session")
+
+    check("connect --help leaves the session alone", test_connect_help_keeps_session)
+
     # ---- Unknown Command ----
     def test_unknown_command():
         r = run_tool("bogus_command_xyz")
