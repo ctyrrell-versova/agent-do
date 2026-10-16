@@ -27,7 +27,7 @@ verify beats are read-only; connect, interact, and save verbs write.
 | [android](#android) | Control Android Emulator | mixed | 5 |
 | [api](#api) | API testing plus canonical API integration templates for agents | mixed | 13 |
 | [appleevents](#appleevents) | Control scriptable macOS apps through AppleEvents, AppleScript, and JXA | mixed | 9 |
-| [appstore](#appstore) | App Store Connect via Apple's official REST API — apps, builds, versions, TestFlight, customer reviews and responses, certificates, profiles, devices, sales/finance reports, review submission. Auth is a short-lived ES256 JWT from a team API key. Not covered — app-record creation and agreements/tax/banking (UI-only), binary upload (Transporter). | mixed | 13 |
+| [appstore](#appstore) | App Store Connect via Apple's official REST API — apps, builds, versions, TestFlight, customer reviews and responses, certificates, profiles, devices, sales/finance report downloads (decompressed to a tab-separated file at --output), review submission. Auth is a short-lived ES256 JWT from a team API key. Not covered — app-record creation and account agreements/tax/banking (no API surface), binary upload (buildUploads endpoints out of scope; use Transporter). | mixed | 13 |
 | [audio](#audio) | Audio processing | mixed | 3 |
 | [auth](#auth) | Site-level authentication orchestration over encrypted session bundles, browser import, and secure credentials | mixed | 13 |
 | [betterstack](#betterstack) | Better Stack Uptime monitoring, incidents, heartbeats, status pages, and on-call | mixed | 14 |
@@ -344,7 +344,7 @@ agent-do +live(scope=desktop,ttl=5m) appleevents permissions Finder
 
 ### appstore
 
-App Store Connect via Apple's official REST API — apps, builds, versions, TestFlight, customer reviews and responses, certificates, profiles, devices, sales/finance reports, review submission. Auth is a short-lived ES256 JWT from a team API key. Not covered — app-record creation and agreements/tax/banking (UI-only), binary upload (Transporter).
+App Store Connect via Apple's official REST API — apps, builds, versions, TestFlight, customer reviews and responses, certificates, profiles, devices, sales/finance report downloads (decompressed to a tab-separated file at --output), review submission. Auth is a short-lived ES256 JWT from a team API key. Not covered — app-record creation and account agreements/tax/banking (no API surface), binary upload (buildUploads endpoints out of scope; use Transporter).
 
 Concurrency: `mixed`
 
@@ -369,8 +369,8 @@ Concurrency: `mixed`
 - `reviews`: Customer reviews: reviews \<app> [--rating N] [--sort S]
 - `certs`: Signing certificates: certs [--type T]
 - `profiles`: Provisioning profiles: profiles [--type T]
-- `devices`: Registered devices: devices [--platform P] [--status S]
-- `reports`: Report downloads: sales --vendor N --frequency F | finance --vendor N --region RR --date YYYY-MM
+- `devices`: Registered devices: devices [--platform IOS|MAC_OS|UNIVERSAL] [--status S]
+- `reports`: Report downloads to --output PATH: sales --vendor N --frequency F | finance --vendor N --region RR --date YYYY-MM
 - `respond`: Publish a review response: respond \<review-id> --body TEXT
 - `submit`: Submit a version for App Review: submit \<app> --version-id ID --yes
 
@@ -404,7 +404,7 @@ agent-do appstore submit com.example.app --version-id VERSION_ID --yes
 - Read-only (snapshot/verify; safe to parallelize): `app`, `apps`, `builds`, `certs`, `devices`, `profiles`, `reviews`, `snapshot`, `testflight groups`, `testflight testers`, `versions`
 - Write (connect/interact/save): `reports finance`, `reports sales`, `respond`, `submit`, `testflight add-tester`
 - destructive (irreversible data loss; confirm before auto-running): `submit`
-- sensitive (emits or persists secret material; guard output): `reports finance`, `reports sales`, `respond`, `submit`, `testflight add-tester`
+- sensitive (emits or persists secret material; guard output): `certs`, `devices`, `profiles`, `reports finance`, `reports sales`, `submit`
 
 ### audio
 

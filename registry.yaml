@@ -1670,9 +1670,10 @@ tools:
   appstore:
     description: App Store Connect via Apple's official REST API — apps, builds, versions,
       TestFlight, customer reviews and responses, certificates, profiles, devices,
-      sales/finance reports, review submission. Auth is a short-lived ES256 JWT from a
-      team API key. Not covered — app-record creation and agreements/tax/banking
-      (UI-only), binary upload (Transporter).
+      sales/finance report downloads (decompressed to a tab-separated file at --output),
+      review submission. Auth is a short-lived ES256 JWT from a team API key. Not
+      covered — app-record creation and account agreements/tax/banking (no API surface),
+      binary upload (buildUploads endpoints out of scope; use Transporter).
     capabilities:
     - list and inspect apps, builds, and App Store versions
     - snapshot apps with latest build and pending review submissions
@@ -1691,8 +1692,8 @@ tools:
       reviews: 'Customer reviews: reviews <app> [--rating N] [--sort S]'
       certs: 'Signing certificates: certs [--type T]'
       profiles: 'Provisioning profiles: profiles [--type T]'
-      devices: 'Registered devices: devices [--platform P] [--status S]'
-      reports: 'Report downloads: sales --vendor N --frequency F | finance --vendor N --region RR --date YYYY-MM'
+      devices: 'Registered devices: devices [--platform IOS|MAC_OS|UNIVERSAL] [--status S]'
+      reports: 'Report downloads to --output PATH: sales --vendor N --frequency F | finance --vendor N --region RR --date YYYY-MM'
       respond: 'Publish a review response: respond <review-id> --body TEXT'
       submit: 'Submit a version for App Review: submit <app> --version-id ID --yes'
     examples:
@@ -1777,9 +1778,11 @@ tools:
         submit:
         - destructive
         - sensitive
-        respond:
+        certs:
         - sensitive
-        testflight add-tester:
+        profiles:
+        - sensitive
+        devices:
         - sensitive
         reports sales:
         - sensitive

@@ -28,8 +28,9 @@ from quantities import QuantityError, lookup  # noqa: E402
 
 ASC_API = os.environ.get("ASC_API_URL", "https://api.appstoreconnect.apple.com/v1")
 
-# Apple's published per-page ceiling for collection endpoints. The bounds gate
-# holds this equal to the authority record apple.appstoreconnect.page_limit.
+# Apple's published per-page ceiling for collection endpoints. Must equal the
+# authority record apple.appstoreconnect.page_limit; tests/test_appstore.py
+# asserts the equality, so a stale copy fails the suite.
 PAGE_LIMIT = 200
 
 # Apple rejects a token whose iat->exp span exceeds the published lifetime cap
@@ -50,7 +51,15 @@ REQUEST_TIMEOUT_SECONDS = 60
 # states are CANCELING, COMPLETING, COMPLETE.
 PENDING_SUBMISSION_STATES = "READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES"
 
+# Platform (appStoreVersions, reviewSubmissions) and BundleIdPlatform
+# (device filter) are different enums in the spec; devices reject TV_OS and
+# VISION_OS and accept UNIVERSAL.
 PLATFORMS = ("IOS", "MAC_OS", "TV_OS", "VISION_OS")
+DEVICE_PLATFORMS = ("IOS", "MAC_OS", "UNIVERSAL")
+
+# Resource attributes that carry signing material; stripped from JSON output
+# unless --with-content is passed, so a casual listing never dumps them.
+CONTENT_ATTRIBUTES = ("certificateContent", "profileContent")
 REVIEW_SORTS = ("rating", "-rating", "createdDate", "-createdDate")
 SALES_FREQUENCIES = ("DAILY", "WEEKLY", "MONTHLY", "YEARLY")
 SALES_REPORT_TYPES = (
@@ -67,8 +76,14 @@ FINANCE_REPORT_TYPES = ("FINANCIAL", "FINANCE_DETAIL")
 _TOKEN_CACHE: dict[str, Any] = {"token": None, "expires_at": 0.0}
 
 
-def fail(message: str, *, code: int = 1) -> SystemExit:
-    print(f"Error: {message}", file=sys.stderr)
+JSON_MODE = False
+
+
+def fail(message: str, *, code: int = 1, error: str = "error") -> SystemExit:
+    if JSON_MODE:
+        print(json.dumps({"ok": False, "error": error, "message": message}, indent=2))
+    else:
+        print(f"Error: {message}", file=sys.stderr)
     return SystemExit(code)
 
 
@@ -117,17 +132,24 @@ def mint_token(*, force: bool = False) -> str:
     private_key = Path(key_path).read_text()
     issued_at = int(now)
     expires_at = issued_at + token_lifetime_seconds()
-    token = jwt.encode(
-        {
-            "iss": issuer_id,
-            "iat": issued_at,
-            "exp": expires_at,
-            "aud": "appstoreconnect-v1",
-        },
-        private_key,
-        algorithm="ES256",
-        headers={"kid": key_id, "typ": "JWT"},
-    )
+    try:
+        token = jwt.encode(
+            {
+                "iss": issuer_id,
+                "iat": issued_at,
+                "exp": expires_at,
+                "aud": "appstoreconnect-v1",
+            },
+            private_key,
+            algorithm="ES256",
+            headers={"kid": key_id, "typ": "JWT"},
+        )
+    except (ValueError, TypeError, jwt.exceptions.PyJWTError):
+        raise fail(
+            f"could not sign with the key at {key_path}; it must be the PEM "
+            f"EC private key (.p8) downloaded from App Store Connect",
+            error="invalid_private_key",
+        )
     _TOKEN_CACHE["token"] = token
     _TOKEN_CACHE["expires_at"] = float(expires_at)
     return token
@@ -172,7 +194,9 @@ def api_request(
 
     headers = {
         "Authorization": f"Bearer {mint_token()}",
-        "Accept": "application/json, application/a-gzip",
+        # Report downloads are served as application/a-gzip only; everything
+        # else is JSON. Asking for exactly what each call consumes.
+        "Accept": "application/a-gzip" if raw else "application/json",
     }
     data = None
     if body is not None:
@@ -237,6 +261,18 @@ def paginate(
 
 def attr(item: dict[str, Any], name: str) -> Any:
     return (item.get("attributes") or {}).get(name)
+
+
+def redact_content(items: list[dict[str, Any]], with_content: bool) -> list[dict[str, Any]]:
+    """Strip signing material from listings unless the caller asked for it."""
+    if with_content:
+        return items
+    for item in items:
+        attributes = item.get("attributes") or {}
+        for name in CONTENT_ATTRIBUTES:
+            if attributes.get(name):
+                attributes[name] = f"[redacted: pass --with-content to include {name}]"
+    return items
 
 
 def emit_list(
@@ -326,11 +362,15 @@ def tester_line(item: dict[str, Any]) -> str:
 
 def review_line(item: dict[str, Any]) -> str:
     stars = attr(item, "rating")
-    return (
+    line = (
         f"{item.get('id', '')}  {stars}/5  {attr(item, 'territory') or ''}  "
         f"{attr(item, 'createdDate') or ''}  "
         f"{attr(item, 'reviewerNickname') or ''}: {attr(item, 'title') or ''}"
     )
+    body = attr(item, "body")
+    if body:
+        line += "\n  " + str(body).replace("\n", "\n  ")
+    return line
 
 
 def cert_line(item: dict[str, Any]) -> str:
@@ -488,6 +528,29 @@ def cmd_testflight(args: argparse.Namespace) -> int:
         return 0
 
     if args.tf_command == "add-tester":
+        existing, _, _ = paginate(
+            "/betaTesters", {"filter[email]": args.email},
+            limit=PAGE_LIMIT, follow_all=False,
+        )
+        if existing:
+            # Already a tester: link to the groups instead of re-creating,
+            # which the API refuses with 409.
+            tester = existing[0]
+            linkage = {"data": [{"type": "betaTesters", "id": str(tester.get("id"))}]}
+            for group_id in args.group:
+                api_request(
+                    "POST",
+                    f"/betaGroups/{urllib.parse.quote(group_id, safe='')}/relationships/betaTesters",
+                    body=linkage,
+                )
+            if args.json:
+                print(json.dumps({"ok": True, "tester": tester, "created": False,
+                                  "groups": args.group}, indent=2))
+            else:
+                print(f"{args.email} is already a tester; added to {len(args.group)} group(s)")
+                print(tester_line(tester))
+            return 0
+
         attributes: dict[str, Any] = {"email": args.email}
         if args.first:
             attributes["firstName"] = args.first
@@ -507,7 +570,8 @@ def cmd_testflight(args: argparse.Namespace) -> int:
         created = api_request("POST", "/betaTesters", body=body)
         tester = created.get("data") or {}
         if args.json:
-            print(json.dumps({"ok": True, "tester": tester}, indent=2))
+            print(json.dumps({"ok": True, "tester": tester, "created": True,
+                              "groups": args.group}, indent=2))
         else:
             print(f"Invited {args.email} to {len(args.group)} group(s)")
             print(tester_line(tester))
@@ -538,7 +602,8 @@ def cmd_certs(args: argparse.Namespace) -> int:
     items, total, truncated = paginate(
         "/certificates", params, limit=args.limit, follow_all=args.all
     )
-    emit_list(args, "certificates", items, total, truncated, cert_line)
+    emit_list(args, "certificates", redact_content(items, args.with_content),
+              total, truncated, cert_line)
     return 0
 
 
@@ -549,7 +614,8 @@ def cmd_profiles(args: argparse.Namespace) -> int:
     items, total, truncated = paginate(
         "/profiles", params, limit=args.limit, follow_all=args.all
     )
-    emit_list(args, "profiles", items, total, truncated, profile_line)
+    emit_list(args, "profiles", redact_content(items, args.with_content),
+              total, truncated, profile_line)
     return 0
 
 
@@ -595,9 +661,8 @@ def cmd_reports(args: argparse.Namespace) -> int:
         }
         if args.date:
             params["filter[reportDate]"] = args.date
-        output = args.output or f"sales-{args.type.lower()}-{args.date or 'latest'}.tsv"
         raw = api_request("GET", "/salesReports", params=params, raw=True)
-        return write_report(raw, output, force=args.force, json_mode=args.json)
+        return write_report(raw, args.output, force=args.force, json_mode=args.json)
 
     if args.report_command == "finance":
         params = {
@@ -606,9 +671,8 @@ def cmd_reports(args: argparse.Namespace) -> int:
             "filter[regionCode]": args.region,
             "filter[reportDate]": args.date,
         }
-        output = args.output or f"finance-{args.region.lower()}-{args.date}.tsv"
         raw = api_request("GET", "/financeReports", params=params, raw=True)
-        return write_report(raw, output, force=args.force, json_mode=args.json)
+        return write_report(raw, args.output, force=args.force, json_mode=args.json)
 
     raise fail(f"unknown reports command: {args.report_command}")
 
@@ -641,6 +705,22 @@ def cmd_submit(args: argparse.Namespace) -> int:
     app = resolve_app(args.ref)
     app_id = str(app.get("id"))
 
+    # An app can have one open submission; surface it instead of creating a
+    # duplicate the API would reject or orphan.
+    open_subs = api_request("GET", "/reviewSubmissions", params={
+        "filter[app]": app_id,
+        "filter[state]": PENDING_SUBMISSION_STATES,
+        "limit": PAGE_LIMIT,
+    })
+    pending = open_subs.get("data") or []
+    if pending:
+        lines = "; ".join(submission_line(sub) for sub in pending)
+        raise fail(
+            f"app {attr(app, 'bundleId')} already has an open review submission: "
+            f"{lines}. Cancel or complete it in App Store Connect first.",
+            error="submission_exists",
+        )
+
     submission = api_request("POST", "/reviewSubmissions", body={
         "data": {
             "type": "reviewSubmissions",
@@ -652,28 +732,59 @@ def cmd_submit(args: argparse.Namespace) -> int:
     })
     submission_id = str((submission.get("data") or {}).get("id"))
 
-    api_request("POST", "/reviewSubmissionItems", body={
-        "data": {
-            "type": "reviewSubmissionItems",
-            "relationships": {
-                "reviewSubmission": {
-                    "data": {"type": "reviewSubmissions", "id": submission_id}
-                },
-                "appStoreVersion": {
-                    "data": {"type": "appStoreVersions", "id": args.version_id}
-                },
-            },
-        }
-    })
+    def cancel_submission(reason: str) -> None:
+        # Best effort: a failed step must not strand a half-built submission.
+        try:
+            api_request("PATCH", f"/reviewSubmissions/{submission_id}", body={
+                "data": {
+                    "type": "reviewSubmissions",
+                    "id": submission_id,
+                    "attributes": {"canceled": True},
+                }
+            })
+            note = f"canceled the partially built submission {submission_id}"
+        except SystemExit:
+            note = (
+                f"could not cancel submission {submission_id}; cancel it in "
+                f"App Store Connect before retrying"
+            )
+        raise fail(f"{reason}; {note}", error="submit_incomplete")
 
-    updated = api_request("PATCH", f"/reviewSubmissions/{submission_id}", body={
-        "data": {
-            "type": "reviewSubmissions",
-            "id": submission_id,
-            "attributes": {"submitted": True},
-        }
-    })
+    try:
+        api_request("POST", "/reviewSubmissionItems", body={
+            "data": {
+                "type": "reviewSubmissionItems",
+                "relationships": {
+                    "reviewSubmission": {
+                        "data": {"type": "reviewSubmissions", "id": submission_id}
+                    },
+                    "appStoreVersion": {
+                        "data": {"type": "appStoreVersions", "id": args.version_id}
+                    },
+                },
+            }
+        })
+    except SystemExit:
+        cancel_submission(f"attaching version {args.version_id} failed")
+
+    try:
+        updated = api_request("PATCH", f"/reviewSubmissions/{submission_id}", body={
+            "data": {
+                "type": "reviewSubmissions",
+                "id": submission_id,
+                "attributes": {"submitted": True},
+            }
+        })
+    except SystemExit:
+        cancel_submission("marking the submission submitted failed")
+
     data = updated.get("data") or {}
+    state = attr(data, "state")
+    if state == "READY_FOR_REVIEW":
+        cancel_submission(
+            f"submission {submission_id} is still READY_FOR_REVIEW after the "
+            f"submit call, so nothing went to App Review"
+        )
     if args.json:
         print(json.dumps({"ok": True, "submission": data}, indent=2))
     else:
@@ -747,14 +858,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     certs = subparsers.add_parser("certs", help="Signing certificates")
     certs.add_argument("--type", help="Certificate type filter")
+    certs.add_argument("--with-content", action="store_true",
+                       help="Include certificateContent in JSON output")
     add_list_flags(certs)
 
     profiles = subparsers.add_parser("profiles", help="Provisioning profiles")
     profiles.add_argument("--type", help="Profile type filter")
+    profiles.add_argument("--with-content", action="store_true",
+                          help="Include profileContent in JSON output")
     add_list_flags(profiles)
 
     devices = subparsers.add_parser("devices", help="Registered devices")
-    devices.add_argument("--platform", choices=PLATFORMS)
+    devices.add_argument("--platform", choices=DEVICE_PLATFORMS)
     devices.add_argument("--status", choices=("ENABLED", "DISABLED"))
     add_list_flags(devices)
 
@@ -766,14 +881,14 @@ def build_parser() -> argparse.ArgumentParser:
     sales.add_argument("--date", help="Report date (YYYY-MM-DD, YYYY-MM, or YYYY per frequency)")
     sales.add_argument("--type", default="SALES", choices=SALES_REPORT_TYPES)
     sales.add_argument("--subtype", default="SUMMARY", choices=SALES_REPORT_SUBTYPES)
-    sales.add_argument("--output", help="Output file path")
+    sales.add_argument("--output", required=True, help="Output file path for the decompressed report")
     sales.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     finance = rep_sub.add_parser("finance", help="Download a finance report")
     finance.add_argument("--vendor", required=True, help="Vendor number")
     finance.add_argument("--region", required=True, help="Region code, like US or ZZ")
     finance.add_argument("--date", required=True, help="Report date (YYYY-MM)")
     finance.add_argument("--type", default="FINANCIAL", choices=FINANCE_REPORT_TYPES)
-    finance.add_argument("--output", help="Output file path")
+    finance.add_argument("--output", required=True, help="Output file path for the decompressed report")
     finance.add_argument("--force", action="store_true", help="Overwrite an existing output file")
 
     respond = subparsers.add_parser("respond", help="Publish a response to a customer review")
@@ -807,7 +922,9 @@ HANDLERS = {
 
 
 def main() -> int:
+    global JSON_MODE
     args = build_parser().parse_args()
+    JSON_MODE = bool(getattr(args, "json", False))
     handler = HANDLERS.get(args.command)
     if handler is None:
         raise fail(f"unknown command: {args.command}", code=2)

@@ -20,22 +20,32 @@ READS
   testflight testers [--group ID] [--email X] [--app REF]
                                     TestFlight beta testers
   reviews <app> [--rating N] [--sort S]
-                                    Customer reviews for an app
-  certs [--type T]                  Signing certificates
-  profiles [--type T]               Provisioning profiles
-  devices [--platform P] [--status S]
-                                    Registered devices
-  reports sales --vendor N --frequency F [--date D] [--type T] [--subtype S] [--output PATH]
-                                    Download a sales report (gzipped TSV)
-  reports finance --vendor N --region RR --date YYYY-MM [--type T] [--output PATH]
-                                    Download a finance report (gzipped TSV)
+                                    Customer reviews for an app (title and body)
+  certs [--type T] [--with-content]
+                                    Signing certificates (certificateContent
+                                    redacted unless --with-content)
+  profiles [--type T] [--with-content]
+                                    Provisioning profiles (profileContent
+                                    redacted unless --with-content)
+  devices [--platform IOS|MAC_OS|UNIVERSAL] [--status S]
+                                    Registered devices (device platform is its
+                                    own enum; TV_OS/VISION_OS are not valid here)
+  reports sales --vendor N --frequency F --output PATH [--date D] [--type T] [--subtype S]
+                                    Download a sales report; the gzipped payload
+                                    is decompressed and written to --output as
+                                    a tab-separated file
+  reports finance --vendor N --region RR --date YYYY-MM --output PATH [--type T]
+                                    Download a finance report (same handling)
 
 WRITES
   testflight add-tester <email> --group ID [--first X] [--last Y]
-                                    Invite a beta tester to one or more groups
+                                    Invite a beta tester; an existing tester is
+                                    linked to the groups instead of re-created
   respond <review-id> --body TEXT   Publish a response to a customer review
   submit <app> --version-id ID [--platform IOS] --yes
-                                    Submit an App Store version for review
+                                    Submit an App Store version for review;
+                                    refuses when an open submission exists and
+                                    cancels its own submission if a step fails
 
 List options: --limit N (page cap 200), --all (follow pagination), --json
 
@@ -51,9 +61,11 @@ Auth model: a short-lived ES256 JSON Web Token is minted per process from the
 literal. The private key and the token are never printed or written to disk.
 
 NOT COVERED (honest gaps, v1):
-  - Creating a new app record, agreements, tax, and banking are App Store
-    Connect UI-only; the official API does not expose them.
-  - Binary upload is Transporter/altool territory, out of scope here.
+  - Creating a new app record, account-level agreements, tax, and banking have
+    no API surface (beta and end-user license agreement endpoints exist in the
+    API but are not wrapped here).
+  - Binary upload is not implemented: the API's buildUploads endpoints are out
+    of scope for v1; use Transporter or altool.
   - Individual API keys (sub-claim auth) are not supported; use a team key.
 
 Examples:
