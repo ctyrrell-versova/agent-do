@@ -167,6 +167,7 @@ check_cmd "render metrics tests" python3 "$SCRIPT_DIR/tests/test_render_metrics.
 check_cmd "betterstack incident tests" python3 "$SCRIPT_DIR/tests/test_betterstack_incident.py"
 check_cmd "psql tests" python3 "$SCRIPT_DIR/tests/test_psql.py"
 check_cmd "psql large-field test" python3 "$SCRIPT_DIR/tests/test_psql_large_field.py"
+check_cmd "psql describe outside public (temp cluster)" python3 "$SCRIPT_DIR/tests/test_psql_describe_schema.py"
 check_cmd "vector tests" python3 "$SCRIPT_DIR/tests/test_vector.py"
 check_output "vector --help" "today" "$AGENT_DO" vector --help
 check_cmd "gh tests" python3 "$SCRIPT_DIR/tests/test_gh.py"
